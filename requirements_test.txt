@@ -1,1 +1,4 @@
-pytest-homeassistant-custom-component
+# Same versions as the local test run (HA 2026.9.4). The integration depends on
+# "frontend" (it serves its Lovelace card), so its package is needed too.
+pytest-homeassistant-custom-component==0.13.367
+home-assistant-frontend==20260826.7

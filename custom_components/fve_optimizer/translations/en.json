@@ -1,0 +1,782 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy flows",
+        "description": "Inverter sensors. Check the signs in Developer tools while importing from the grid and while charging the battery.",
+        "data": {
+          "grid_power": "Grid power",
+          "grid_import_positive": "Grid import is positive",
+          "battery_power": "Battery power",
+          "battery_charge_positive": "Battery charging is positive",
+          "battery_soc": "Battery SoC",
+          "pv_power": "PV power (optional)",
+          "house_power": "House consumption (optional)"
+        },
+        "data_description": {
+          "grid_power": "Instantaneous power at the meter in W.",
+          "grid_import_positive": "Turn off if your sensor reports import as negative.",
+          "battery_power": "Instantaneous battery power in W.",
+          "battery_charge_positive": "Turn off if the sensor reports charging as negative.",
+          "house_power": "Total consumption (e.g. Growatt load power). Managed devices are subtracted automatically. Used instead of the average consumption for the forecast check."
+        }
+      },
+      "battery": {
+        "title": "Battery and forecast",
+        "description": "The battery has priority up to the target SoC. With the target from the time without production the target is computed to cover the evening and night. When the forecast until sunset covers charging and the house load, the target is lowered so devices get surplus earlier.",
+        "data": {
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_target_soc": "Maximum target SoC",
+          "forecast_remaining_today": "Forecast remaining today (Solcast)",
+          "forecast_min_soc": "Target SoC when the forecast is sufficient",
+          "forecast_safety_factor": "Forecast safety factor",
+          "house_avg_power_w": "Average daytime house power",
+          "night_target": "Target from time without production",
+          "night_power_w": "House power without production",
+          "night_extra_hours": "Extra hours without production",
+          "battery_reserve_soc": "Battery reserve",
+          "battery_max_charge_w": "Battery max charging power"
+        },
+        "data_description": {
+          "forecast_remaining_today": "Sensor in kWh, e.g. sensor.solcast_pv_forecast_forecast_remaining_today.",
+          "forecast_safety_factor": "1.3 = the forecast must promise 30% more than needed (margin for forecast error).",
+          "battery_capacity_kwh": "Usable capacity of the home battery.",
+          "battery_target_soc": "Upper bound. With the target from the time without production the actual target is usually lower.",
+          "forecast_min_soc": "Lower target used when the forecast until sunset covers charging the battery and the house load. Devices get surplus earlier and the battery charges later.",
+          "house_avg_power_w": "Average power in W (typically 400–800 W), not daily energy in kWh. Without managed devices. Used only when no house consumption sensor is set.",
+          "night_target": "The battery has priority only up to the SoC that covers consumption from sunset to sunrise (+ reserve). Devices get the rest.",
+          "night_power_w": "Average evening and night power (W).",
+          "night_extra_hours": "Hours added to the night – weak production after sunrise and before sunset.",
+          "battery_reserve_soc": "SoC that should remain in the morning (minimum discharge).",
+          "battery_max_charge_w": "How much the battery can take (W). While the battery has priority, devices only get surplus above this – running devices give way too."
+        }
+      },
+      "control": {
+        "title": "Control",
+        "data": {
+          "export_limit_entity": "Export limit entity",
+          "export_limit_normal": "Normal export limit",
+          "export_limit_raised": "Raised export limit",
+          "phase_current_sensors": "Phase current sensors",
+          "main_breaker_a": "Main breaker",
+          "breaker_margin_a": "Breaker margin",
+          "reserve_w": "Power reserve",
+          "update_interval": "Control interval",
+          "nominal_voltage": "Nominal voltage",
+          "export_limit_control": "Control export limit",
+          "export_limit_reraise": "Allow export again during the day",
+          "battery_full_soc": "Battery full SoC",
+          "battery_borrow": "Round up from a full battery",
+          "input_timeout_s": "Data timeout",
+          "dry_run": "Watch only"
+        },
+        "data_description": {
+          "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
+          "export_limit_normal": "Value outside of dispatching, e.g. 0.",
+          "phase_current_sensors": "L1–L3 currents at the meter. Without them the breaker is not guarded.",
+          "reserve_w": "Distribute this much less to avoid grid import.",
+          "nominal_voltage": "Phase voltage used to convert current to power.",
+          "export_limit_raised": "Value while devices take surplus, e.g. 100 % or 10000 W.",
+          "export_limit_control": "On: the limit is raised once a day in the morning when something can store energy and the forecast promises surplus beyond the house and battery; lowered only when nothing can store (battery full, boiler hot, car charged/away). It is not touched in the evening. Off: the limit stays as you set it.",
+          "export_limit_reraise": "After lowering, raise the limit again the same day when storage appears (e.g. the car arrives). Off = at most once a day (fewer inverter writes).",
+          "battery_full_soc": "From this SoC the battery counts as full (stores nothing more).",
+          "battery_borrow": "When the battery is full, devices are rounded to the nearest step – the car by 1 A, the boiler starts at half its power. The battery covers the difference instead of exporting. Borrowing stops 5 % below full, then the battery recharges.",
+          "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
+          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation."
+        },
+        "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
+      },
+      "hdo": {
+        "title": "HDO – low tariff",
+        "description": "Where to get the low-tariff times. Used by boiler deadline heating (HDO only) and diagnostics.",
+        "data": {
+          "hdo_source": "HDO source"
+        }
+      },
+      "hdo_egd": {
+        "title": "HDO – EG.D",
+        "description": "Find the HDO code on the HDO receiver, the meter or egd.cz. Enter it as A1B4DP5, or a command code (e.g. 405, Cd56 for smart meters).",
+        "data": {
+          "hdo_egd_psc": "Postal code (PSČ)",
+          "hdo_egd_code": "HDO code"
+        }
+      },
+      "hdo_pre": {
+        "title": "HDO – PRE",
+        "description": "Find the HDO command (povel) in Moje PRE or on the HDO receiver.",
+        "data": {
+          "hdo_pre_povel": "HDO command"
+        }
+      },
+      "hdo_calendar": {
+        "title": "HDO – calendar",
+        "description": "Calendar whose events are low-tariff windows (e.g. from the ČEZ Distribuce integration).",
+        "data": {
+          "hdo_entity": "Calendar"
+        }
+      },
+      "hdo_entity": {
+        "title": "HDO – entity",
+        "description": "Entity that is on during the low tariff. Future windows are unknown, so every HDO window is used.",
+        "data": {
+          "hdo_entity": "HDO entity"
+        }
+      },
+      "hdo_manual": {
+        "title": "HDO – manual times",
+        "description": "Low-tariff times, e.g. 00:00-06:00; 14:00-17:00. Public holidays count as weekend.",
+        "data": {
+          "hdo_manual_workday": "Workdays",
+          "hdo_manual_weekend": "Weekend and holidays (empty = same)"
+        }
+      }
+    },
+    "error": {
+      "raised_not_above_normal": "The raised limit must be higher than the normal one.",
+      "raised_too_low_watts": "The limit entity is in W. A raised limit below 1000 W reveals almost nothing; it should probably be e.g. 10000.",
+      "egd_code_not_found": "EG.D has no schedule for this HDO code and PSČ.",
+      "egd_unknown_psc": "EG.D does not know this PSČ.",
+      "cannot_connect": "Could not reach the distributor, try again.",
+      "pre_povel_not_found": "PRE returned no schedule for this command.",
+      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Energy flows",
+        "description": "Inverter sensors. Check the signs in Developer tools while importing from the grid and while charging the battery.",
+        "data": {
+          "grid_power": "Grid power",
+          "grid_import_positive": "Grid import is positive",
+          "battery_power": "Battery power",
+          "battery_charge_positive": "Battery charging is positive",
+          "battery_soc": "Battery SoC",
+          "pv_power": "PV power (optional)",
+          "house_power": "House consumption (optional)"
+        },
+        "data_description": {
+          "grid_power": "Instantaneous power at the meter in W.",
+          "grid_import_positive": "Turn off if your sensor reports import as negative.",
+          "battery_power": "Instantaneous battery power in W.",
+          "battery_charge_positive": "Turn off if the sensor reports charging as negative.",
+          "house_power": "Total consumption (e.g. Growatt load power). Managed devices are subtracted automatically. Used instead of the average consumption for the forecast check."
+        }
+      },
+      "battery": {
+        "title": "Battery and forecast",
+        "description": "The battery has priority up to the target SoC. With the target from the time without production the target is computed to cover the evening and night. When the forecast until sunset covers charging and the house load, the target is lowered so devices get surplus earlier.",
+        "data": {
+          "battery_capacity_kwh": "Battery capacity",
+          "battery_target_soc": "Maximum target SoC",
+          "forecast_remaining_today": "Forecast remaining today (Solcast)",
+          "forecast_min_soc": "Target SoC when the forecast is sufficient",
+          "forecast_safety_factor": "Forecast safety factor",
+          "house_avg_power_w": "Average daytime house power",
+          "night_target": "Target from time without production",
+          "night_power_w": "House power without production",
+          "night_extra_hours": "Extra hours without production",
+          "battery_reserve_soc": "Battery reserve",
+          "battery_max_charge_w": "Battery max charging power"
+        },
+        "data_description": {
+          "forecast_remaining_today": "Sensor in kWh, e.g. sensor.solcast_pv_forecast_forecast_remaining_today.",
+          "forecast_safety_factor": "1.3 = the forecast must promise 30% more than needed (margin for forecast error).",
+          "battery_capacity_kwh": "Usable capacity of the home battery.",
+          "battery_target_soc": "Upper bound. With the target from the time without production the actual target is usually lower.",
+          "forecast_min_soc": "Lower target used when the forecast until sunset covers charging the battery and the house load. Devices get surplus earlier and the battery charges later.",
+          "house_avg_power_w": "Average power in W (typically 400–800 W), not daily energy in kWh. Without managed devices. Used only when no house consumption sensor is set.",
+          "night_target": "The battery has priority only up to the SoC that covers consumption from sunset to sunrise (+ reserve). Devices get the rest.",
+          "night_power_w": "Average evening and night power (W).",
+          "night_extra_hours": "Hours added to the night – weak production after sunrise and before sunset.",
+          "battery_reserve_soc": "SoC that should remain in the morning (minimum discharge).",
+          "battery_max_charge_w": "How much the battery can take (W). While the battery has priority, devices only get surplus above this – running devices give way too."
+        }
+      },
+      "control": {
+        "title": "Control",
+        "data": {
+          "export_limit_entity": "Export limit entity",
+          "export_limit_normal": "Normal export limit",
+          "export_limit_raised": "Raised export limit",
+          "phase_current_sensors": "Phase current sensors",
+          "main_breaker_a": "Main breaker",
+          "breaker_margin_a": "Breaker margin",
+          "reserve_w": "Power reserve",
+          "update_interval": "Control interval",
+          "nominal_voltage": "Nominal voltage",
+          "export_limit_control": "Control export limit",
+          "export_limit_reraise": "Allow export again during the day",
+          "battery_full_soc": "Battery full SoC",
+          "battery_borrow": "Round up from a full battery",
+          "input_timeout_s": "Data timeout",
+          "dry_run": "Watch only"
+        },
+        "data_description": {
+          "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
+          "export_limit_normal": "Value outside of dispatching, e.g. 0.",
+          "phase_current_sensors": "L1–L3 currents at the meter. Without them the breaker is not guarded.",
+          "reserve_w": "Distribute this much less to avoid grid import.",
+          "nominal_voltage": "Phase voltage used to convert current to power.",
+          "export_limit_raised": "Value while devices take surplus, e.g. 100 % or 10000 W.",
+          "export_limit_control": "On: the limit is raised once a day in the morning when something can store energy and the forecast promises surplus beyond the house and battery; lowered only when nothing can store (battery full, boiler hot, car charged/away). It is not touched in the evening. Off: the limit stays as you set it.",
+          "export_limit_reraise": "After lowering, raise the limit again the same day when storage appears (e.g. the car arrives). Off = at most once a day (fewer inverter writes).",
+          "battery_full_soc": "From this SoC the battery counts as full (stores nothing more).",
+          "battery_borrow": "When the battery is full, devices are rounded to the nearest step – the car by 1 A, the boiler starts at half its power. The battery covers the difference instead of exporting. Borrowing stops 5 % below full, then the battery recharges.",
+          "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
+          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation."
+        },
+        "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
+      },
+      "hdo": {
+        "title": "HDO – low tariff",
+        "description": "Where to get the low-tariff times. Used by boiler deadline heating (HDO only) and diagnostics.",
+        "data": {
+          "hdo_source": "HDO source"
+        }
+      },
+      "hdo_egd": {
+        "title": "HDO – EG.D",
+        "description": "Find the HDO code on the HDO receiver, the meter or egd.cz. Enter it as A1B4DP5, or a command code (e.g. 405, Cd56 for smart meters).",
+        "data": {
+          "hdo_egd_psc": "Postal code (PSČ)",
+          "hdo_egd_code": "HDO code"
+        }
+      },
+      "hdo_pre": {
+        "title": "HDO – PRE",
+        "description": "Find the HDO command (povel) in Moje PRE or on the HDO receiver.",
+        "data": {
+          "hdo_pre_povel": "HDO command"
+        }
+      },
+      "hdo_calendar": {
+        "title": "HDO – calendar",
+        "description": "Calendar whose events are low-tariff windows (e.g. from the ČEZ Distribuce integration).",
+        "data": {
+          "hdo_entity": "Calendar"
+        }
+      },
+      "hdo_entity": {
+        "title": "HDO – entity",
+        "description": "Entity that is on during the low tariff. Future windows are unknown, so every HDO window is used.",
+        "data": {
+          "hdo_entity": "HDO entity"
+        }
+      },
+      "hdo_manual": {
+        "title": "HDO – manual times",
+        "description": "Low-tariff times, e.g. 00:00-06:00; 14:00-17:00. Public holidays count as weekend.",
+        "data": {
+          "hdo_manual_workday": "Workdays",
+          "hdo_manual_weekend": "Weekend and holidays (empty = same)"
+        }
+      }
+    },
+    "error": {
+      "raised_not_above_normal": "The raised limit must be higher than the normal one.",
+      "raised_too_low_watts": "The limit entity is in W. A raised limit below 1000 W reveals almost nothing; it should probably be e.g. 10000.",
+      "egd_code_not_found": "EG.D has no schedule for this HDO code and PSČ.",
+      "egd_unknown_psc": "EG.D does not know this PSČ.",
+      "cannot_connect": "Could not reach the distributor, try again.",
+      "pre_povel_not_found": "PRE returned no schedule for this command.",
+      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00."
+    }
+  },
+  "config_subentries": {
+    "switched": {
+      "entry_type": "Switched device",
+      "initiate_flow": {
+        "user": "Add switched device (boiler, heater…)",
+        "reconfigure": "Edit device"
+      },
+      "step": {
+        "user": {
+          "title": "Add switched device (boiler, heater…)",
+          "data": {
+            "name": "Name",
+            "switch_entity": "Switch",
+            "nominal_power_w": "Power",
+            "phases": "Phases",
+            "power_sensor": "Power sensor (optional)",
+            "temperature_sensor": "Water temperature (optional)",
+            "max_temperature": "Maximum surplus temperature",
+            "min_on_time_s": "Minimum on time",
+            "min_off_time_s": "Minimum off time",
+            "priority": "Priority",
+            "on_delay_s": "Turn-on delay",
+            "off_delay_s": "Turn-off delay",
+            "on_margin_w": "Turn-on margin",
+            "off_tolerance_w": "Turn-off tolerance",
+            "deadline_enabled": "Heat by deadline",
+            "deadline_time": "Deadline time",
+            "deadline_temperature": "Deadline temperature",
+            "tank_volume_l": "Tank volume",
+            "deadline_hysteresis": "Deadline hysteresis",
+            "deadline_safety_factor": "Heating time margin",
+            "max_temperature_hysteresis": "Maximum temperature hysteresis",
+            "deadline_hdo_only": "Deadline heating only in HDO",
+            "deadline_earliest": "Grid heating not before",
+            "legionella_enabled": "Anti-legionella",
+            "legionella_temperature": "Anti-legionella temperature",
+            "legionella_interval_days": "Anti-legionella interval",
+            "minimum_before_battery": "Minimum before battery"
+          },
+          "data_description": {
+            "power_sensor": "Detects that the boiler thermostat cut off and offers the power to others.",
+            "max_temperature": "The boiler is heated from surplus up to this temperature (energy storage). Independent of the deadline temperature.",
+            "priority": "Lower number = gets surplus first.",
+            "on_margin_w": "Surplus must exceed the power by this much to turn on.",
+            "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
+            "deadline_enabled": "If the water will not reach the temperature by the given time, the boiler is topped up without surplus (in HDO or just before the deadline). Needs a temperature sensor.",
+            "tank_volume_l": "Used to compute when to start heating.",
+            "deadline_hysteresis": "Deadline heating starts only when the water is at least this much below the target.",
+            "deadline_safety_factor": "1.2 = starts 20% earlier than computed.",
+            "max_temperature_hysteresis": "After reaching the maximum, surplus heating resumes only after the water cools by this much.",
+            "deadline_hdo_only": "On: what the solar forecast will not cover is heated from the grid only in low tariff – in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
+            "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
+            "legionella_enabled": "Once per interval heats the water to the anti-legionella temperature – preferably from surplus (temporarily raises the maximum), with deadline heating also in HDO / before the deadline. The boiler thermostat must allow this temperature.",
+            "legionella_interval_days": "Days after the last time the temperature was reached.",
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit device",
+          "data": {
+            "name": "Name",
+            "switch_entity": "Switch",
+            "nominal_power_w": "Power",
+            "phases": "Phases",
+            "power_sensor": "Power sensor (optional)",
+            "temperature_sensor": "Water temperature (optional)",
+            "max_temperature": "Maximum surplus temperature",
+            "min_on_time_s": "Minimum on time",
+            "min_off_time_s": "Minimum off time",
+            "priority": "Priority",
+            "on_delay_s": "Turn-on delay",
+            "off_delay_s": "Turn-off delay",
+            "on_margin_w": "Turn-on margin",
+            "off_tolerance_w": "Turn-off tolerance",
+            "deadline_enabled": "Heat by deadline",
+            "deadline_time": "Deadline time",
+            "deadline_temperature": "Deadline temperature",
+            "tank_volume_l": "Tank volume",
+            "deadline_hysteresis": "Deadline hysteresis",
+            "deadline_safety_factor": "Heating time margin",
+            "max_temperature_hysteresis": "Maximum temperature hysteresis",
+            "deadline_hdo_only": "Deadline heating only in HDO",
+            "deadline_earliest": "Grid heating not before",
+            "legionella_enabled": "Anti-legionella",
+            "legionella_temperature": "Anti-legionella temperature",
+            "legionella_interval_days": "Anti-legionella interval",
+            "minimum_before_battery": "Minimum before battery"
+          },
+          "data_description": {
+            "power_sensor": "Detects that the boiler thermostat cut off and offers the power to others.",
+            "max_temperature": "The boiler is heated from surplus up to this temperature (energy storage). Independent of the deadline temperature.",
+            "priority": "Lower number = gets surplus first.",
+            "on_margin_w": "Surplus must exceed the power by this much to turn on.",
+            "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
+            "deadline_enabled": "If the water will not reach the temperature by the given time, the boiler is topped up without surplus (in HDO or just before the deadline). Needs a temperature sensor.",
+            "tank_volume_l": "Used to compute when to start heating.",
+            "deadline_hysteresis": "Deadline heating starts only when the water is at least this much below the target.",
+            "deadline_safety_factor": "1.2 = starts 20% earlier than computed.",
+            "max_temperature_hysteresis": "After reaching the maximum, surplus heating resumes only after the water cools by this much.",
+            "deadline_hdo_only": "On: what the solar forecast will not cover is heated from the grid only in low tariff – in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
+            "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
+            "legionella_enabled": "Once per interval heats the water to the anti-legionella temperature – preferably from surplus (temporarily raises the maximum), with deadline heating also in HDO / before the deadline. The boiler thermostat must allow this temperature.",
+            "legionella_interval_days": "Days after the last time the temperature was reached.",
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Device updated."
+      },
+      "error": {
+        "max_below_min": "Maximum current must be at least the minimum."
+      }
+    },
+    "ev_charger": {
+      "entry_type": "EV charger",
+      "initiate_flow": {
+        "user": "Add EV charger",
+        "reconfigure": "Edit device"
+      },
+      "step": {
+        "user": {
+          "title": "Add EV charger",
+          "data": {
+            "name": "Name",
+            "charge_switch": "Charging switch",
+            "current_entity": "Charging current",
+            "three_phase_switch": "3-phase switch (optional)",
+            "phases": "Phases (without switch)",
+            "power_sensor": "Power sensor (optional)",
+            "connected_entity": "Car connected (optional)",
+            "min_current": "Minimum current",
+            "max_current": "Maximum current",
+            "phase_switch_interval_s": "Minimum phase switch interval",
+            "priority": "Priority",
+            "on_delay_s": "Turn-on delay",
+            "off_delay_s": "Turn-off delay",
+            "on_margin_w": "Turn-on margin",
+            "off_tolerance_w": "Turn-off tolerance",
+            "ev_soc_sensor": "Car SoC (optional)",
+            "ev_deadline_enabled": "Charge by deadline",
+            "ev_deadline_time": "Charging deadline",
+            "ev_deadline_soc": "Minimum SoC at deadline",
+            "ev_deadline_hdo_only": "Deadline charging only in HDO",
+            "ev_capacity_kwh": "Car battery capacity",
+            "ev_charge_efficiency": "Charging efficiency",
+            "ev_deadline_safety_factor": "Charging time margin",
+            "minimum_before_battery": "Minimum before battery"
+          },
+          "data_description": {
+            "three_phase_switch": "On = 3 phases. Without it a fixed phase count is used.",
+            "phase_switch_interval_s": "Phase switching interrupts charging, so not more often.",
+            "priority": "Lower number = gets surplus first.",
+            "on_margin_w": "Surplus must exceed the power by this much to turn on.",
+            "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
+            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables 'at least X % in the morning'.",
+            "ev_deadline_enabled": "If surplus is not enough, the car is charged to the minimum SoC by the deadline.",
+            "ev_deadline_time": "E.g. 07:00 – the next occurrence (morning).",
+            "ev_deadline_hdo_only": "On: grid charging only in low tariff, in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
+            "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
+            "ev_charge_efficiency": "0.9 = 10% losses.",
+            "ev_deadline_safety_factor": "1.2 = starts 20% earlier.",
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit device",
+          "data": {
+            "name": "Name",
+            "charge_switch": "Charging switch",
+            "current_entity": "Charging current",
+            "three_phase_switch": "3-phase switch (optional)",
+            "phases": "Phases (without switch)",
+            "power_sensor": "Power sensor (optional)",
+            "connected_entity": "Car connected (optional)",
+            "min_current": "Minimum current",
+            "max_current": "Maximum current",
+            "phase_switch_interval_s": "Minimum phase switch interval",
+            "priority": "Priority",
+            "on_delay_s": "Turn-on delay",
+            "off_delay_s": "Turn-off delay",
+            "on_margin_w": "Turn-on margin",
+            "off_tolerance_w": "Turn-off tolerance",
+            "ev_soc_sensor": "Car SoC (optional)",
+            "ev_deadline_enabled": "Charge by deadline",
+            "ev_deadline_time": "Charging deadline",
+            "ev_deadline_soc": "Minimum SoC at deadline",
+            "ev_deadline_hdo_only": "Deadline charging only in HDO",
+            "ev_capacity_kwh": "Car battery capacity",
+            "ev_charge_efficiency": "Charging efficiency",
+            "ev_deadline_safety_factor": "Charging time margin",
+            "minimum_before_battery": "Minimum before battery"
+          },
+          "data_description": {
+            "three_phase_switch": "On = 3 phases. Without it a fixed phase count is used.",
+            "phase_switch_interval_s": "Phase switching interrupts charging, so not more often.",
+            "priority": "Lower number = gets surplus first.",
+            "on_margin_w": "Surplus must exceed the power by this much to turn on.",
+            "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
+            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables 'at least X % in the morning'.",
+            "ev_deadline_enabled": "If surplus is not enough, the car is charged to the minimum SoC by the deadline.",
+            "ev_deadline_time": "E.g. 07:00 – the next occurrence (morning).",
+            "ev_deadline_hdo_only": "On: grid charging only in low tariff, in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
+            "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
+            "ev_charge_efficiency": "0.9 = 10% losses.",
+            "ev_deadline_safety_factor": "1.2 = starts 20% earlier.",
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Device updated."
+      },
+      "error": {
+        "max_below_min": "Maximum current must be at least the minimum."
+      }
+    }
+  },
+  "selector": {
+    "phases": {
+      "options": {
+        "1": "1 phase",
+        "3": "3 phases"
+      }
+    },
+    "hdo_source": {
+      "options": {
+        "none": "No HDO",
+        "egd": "EG.D (PSČ + HDO code)",
+        "pre": "PRE (HDO command)",
+        "calendar": "Calendar (e.g. ČEZ Distribuce integration)",
+        "entity": "On/off entity (HDO receiver, schedule)",
+        "manual": "Manual times"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "enabled": {
+        "name": "Optimization"
+      },
+      "device_control": {
+        "name": "Control"
+      },
+      "device_deadline_enabled": {
+        "name": "Heat by deadline"
+      },
+      "export_limit_control": {
+        "name": "Control export limit"
+      },
+      "device_deadline_hdo_only": {
+        "name": "Deadline heating only in HDO"
+      },
+      "night_target": {
+        "name": "Target from time without production"
+      },
+      "device_ev_deadline_enabled": {
+        "name": "Charge by deadline"
+      },
+      "device_ev_deadline_hdo_only": {
+        "name": "Deadline charging only in HDO"
+      },
+      "device_legionella_enabled": {
+        "name": "Anti-legionella"
+      },
+      "device_minimum_before_battery": {
+        "name": "Minimum before battery"
+      },
+      "export_limit_reraise": {
+        "name": "Allow export again during the day"
+      },
+      "battery_borrow": {
+        "name": "Round up from a full battery"
+      },
+      "dry_run": {
+        "name": "Watch only"
+      }
+    },
+    "sensor": {
+      "budget": {
+        "name": "Surplus to distribute"
+      },
+      "allocated": {
+        "name": "Allocated"
+      },
+      "managed": {
+        "name": "Managed consumption"
+      },
+      "effective_target_soc": {
+        "name": "Battery target SoC"
+      },
+      "breaker_headroom": {
+        "name": "Breaker headroom"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "init": "Starting",
+          "disabled": "Disabled",
+          "missing_input": "Missing input",
+          "battery_priority": "Battery priority",
+          "dispatching": "Dispatching",
+          "failsafe": "Fail-safe – no data"
+        }
+      },
+      "device_allocated": {
+        "name": "Allocated power"
+      },
+      "device_reason": {
+        "name": "Control state",
+        "state": {
+          "init": "Starting",
+          "disabled": "Not controlled",
+          "unavailable": "Unavailable",
+          "not_connected": "Car not connected",
+          "temperature_reached": "Temperature reached",
+          "waiting_for_surplus": "Waiting for surplus",
+          "starting": "Starting",
+          "running": "Running",
+          "charging": "Charging",
+          "no_surplus": "Low surplus",
+          "min_on_time": "Minimum on time",
+          "min_off_time": "Minimum off time",
+          "deadline_heating": "Heating for deadline",
+          "breaker_limit": "Limited by breaker",
+          "waiting_for_hdo": "Waiting for HDO",
+          "deadline_charging": "Charging for deadline"
+        }
+      },
+      "last_decision": {
+        "name": "Last decision"
+      }
+    },
+    "binary_sensor": {
+      "battery_priority": {
+        "name": "Battery priority"
+      },
+      "forecast_covers_battery": {
+        "name": "Forecast covers battery"
+      },
+      "export_limit_raised": {
+        "name": "Export limit raised"
+      },
+      "device_active": {
+        "name": "Active"
+      },
+      "hdo": {
+        "name": "HDO (low tariff)"
+      }
+    },
+    "number": {
+      "battery_capacity_kwh": {
+        "name": "Battery capacity"
+      },
+      "battery_target_soc": {
+        "name": "Maximum target SoC"
+      },
+      "forecast_min_soc": {
+        "name": "Target SoC when the forecast is sufficient"
+      },
+      "forecast_safety_factor": {
+        "name": "Forecast safety factor"
+      },
+      "house_avg_power_w": {
+        "name": "Average daytime house power"
+      },
+      "export_limit_normal": {
+        "name": "Normal export limit"
+      },
+      "export_limit_raised": {
+        "name": "Raised export limit"
+      },
+      "main_breaker_a": {
+        "name": "Main breaker"
+      },
+      "breaker_margin_a": {
+        "name": "Breaker margin"
+      },
+      "reserve_w": {
+        "name": "Power reserve"
+      },
+      "nominal_voltage": {
+        "name": "Nominal voltage"
+      },
+      "update_interval": {
+        "name": "Control interval"
+      },
+      "device_off_tolerance_w": {
+        "name": "Turn-off tolerance"
+      },
+      "device_on_margin_w": {
+        "name": "Turn-on margin"
+      },
+      "device_on_delay_s": {
+        "name": "Turn-on delay"
+      },
+      "device_priority": {
+        "name": "Priority"
+      },
+      "device_phase_switch_interval_s": {
+        "name": "Minimum phase switch interval"
+      },
+      "device_min_off_time_s": {
+        "name": "Minimum off time"
+      },
+      "device_min_current": {
+        "name": "Minimum current"
+      },
+      "device_off_delay_s": {
+        "name": "Turn-off delay"
+      },
+      "device_min_on_time_s": {
+        "name": "Minimum on time"
+      },
+      "device_nominal_power_w": {
+        "name": "Power"
+      },
+      "device_max_temperature": {
+        "name": "Maximum surplus temperature"
+      },
+      "device_max_current": {
+        "name": "Maximum current"
+      },
+      "device_deadline_temperature": {
+        "name": "Deadline temperature"
+      },
+      "device_tank_volume_l": {
+        "name": "Tank volume"
+      },
+      "device_deadline_hysteresis": {
+        "name": "Deadline hysteresis"
+      },
+      "device_deadline_safety_factor": {
+        "name": "Heating time margin"
+      },
+      "device_max_temperature_hysteresis": {
+        "name": "Maximum temperature hysteresis"
+      },
+      "night_power_w": {
+        "name": "House power without production"
+      },
+      "night_extra_hours": {
+        "name": "Extra hours without production"
+      },
+      "battery_reserve_soc": {
+        "name": "Battery reserve"
+      },
+      "device_ev_deadline_soc": {
+        "name": "Minimum SoC at deadline"
+      },
+      "device_ev_capacity_kwh": {
+        "name": "Car battery capacity"
+      },
+      "device_ev_charge_efficiency": {
+        "name": "Charging efficiency"
+      },
+      "device_ev_deadline_safety_factor": {
+        "name": "Charging time margin"
+      },
+      "device_legionella_temperature": {
+        "name": "Anti-legionella temperature"
+      },
+      "device_legionella_interval_days": {
+        "name": "Anti-legionella interval"
+      },
+      "battery_max_charge_w": {
+        "name": "Battery max charging power"
+      },
+      "battery_full_soc": {
+        "name": "Battery full SoC"
+      },
+      "input_timeout_s": {
+        "name": "Data timeout"
+      }
+    },
+    "select": {
+      "device_phases": {
+        "name": "Phases",
+        "state": {
+          "1": "1 phase",
+          "3": "3 phases"
+        }
+      }
+    },
+    "time": {
+      "device_deadline_time": {
+        "name": "Deadline time"
+      },
+      "device_deadline_earliest": {
+        "name": "Grid heating not before"
+      },
+      "device_ev_deadline_time": {
+        "name": "Charging deadline"
+      }
+    }
+  }
+}

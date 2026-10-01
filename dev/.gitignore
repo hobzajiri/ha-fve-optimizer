@@ -1,0 +1,4 @@
+# Runtime data vývojového HA – do gitu jen konfigurace a simulátor.
+config/*
+!config/configuration.yaml
+!config/packages/

@@ -1,0 +1,835 @@
+"""The dispatcher: computes the surplus and hands it out by priority."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import timedelta
+import logging
+import math
+import time
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
+
+from .const import (
+    CONF_BATTERY_CAPACITY_KWH,
+    CONF_BATTERY_CHARGE_POSITIVE,
+    CONF_BATTERY_MAX_CHARGE_W,
+    CONF_BATTERY_POWER,
+    CONF_BATTERY_SOC,
+    CONF_BATTERY_RESERVE_SOC,
+    CONF_BATTERY_TARGET_SOC,
+    CONF_NIGHT_EXTRA_H,
+    CONF_NIGHT_POWER_W,
+    CONF_NIGHT_TARGET,
+    CONF_BREAKER_MARGIN_A,
+    BORROW_SOC_BAND,
+    CONF_BATTERY_BORROW,
+    CONF_BATTERY_FULL_SOC,
+    CONF_EXPORT_CONTROL,
+    CONF_EXPORT_RERAISE,
+    CONF_EXPORT_LIMIT_ENTITY,
+    CONF_EXPORT_LIMIT_NORMAL,
+    CONF_EXPORT_LIMIT_RAISED,
+    CONF_FORECAST_MIN_SOC,
+    CONF_FORECAST_REMAINING,
+    CONF_FORECAST_SAFETY,
+    CONF_GRID_IMPORT_POSITIVE,
+    CONF_GRID_POWER,
+    CONF_HOUSE_AVG_POWER_W,
+    CONF_HOUSE_POWER,
+    CONF_INPUT_TIMEOUT,
+    CONF_DRY_RUN,
+    CONF_MAIN_BREAKER_A,
+    CONF_MIN_BEFORE_BATTERY,
+    CONF_NOMINAL_VOLTAGE,
+    CONF_PHASE_CURRENTS,
+    CONF_PV_POWER,
+    CONF_RESERVE_W,
+    CONF_UPDATE_INTERVAL,
+    DEFAULTS,
+    DEVICE_TUNABLES,
+    DOMAIN,
+    HUB_TUNABLE_KEYS,
+)
+from .hdo import HdoSchedule, settings_from_conf
+from .devices import (
+    DEVICE_TYPES,
+    Headroom,
+    ManagedDevice,
+    async_set_number,
+    state_float,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class DispatchSnapshot:
+    """Result of one dispatcher cycle, read by the entities."""
+
+    grid_w: float | None = None
+    battery_w: float | None = None
+    battery_soc: float | None = None
+    pv_w: float | None = None
+    house_w: float | None = None
+    managed_w: float = 0.0
+    budget_w: float = 0.0
+    allocated_w: float = 0.0
+    battery_priority: bool = True
+    effective_target_soc: float | None = None
+    forecast_covers_battery: bool = False
+    export_limit_raised: bool = False
+    headroom_a: float | None = None
+    forecast_remaining_kwh: float | None = None
+    forecast_need_kwh: float | None = None
+    hours_until_sunset: float | None = None
+    night_hours: float | None = None
+    night_kwh: float | None = None
+    night_target_soc: float | None = None
+    solar_for_devices_kwh: float | None = None
+    borrow_active: bool = False
+    dry_run: bool = False
+    stale_inputs: list[str] = field(default_factory=list)
+    hdo_active: bool | None = None
+    reason: str = "init"
+    devices: dict[str, dict[str, Any]] = field(default_factory=dict)
+    decision: str | None = None
+    decision_lines: list[str] = field(default_factory=list)
+    decision_changed_at: str | None = None
+    decision_data: dict[str, Any] = field(default_factory=dict)
+    # Same structure as decision_data, refreshed every cycle (for the card).
+    live_data: dict[str, Any] = field(default_factory=dict)
+
+
+class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
+    """Runs the dispatch loop every few seconds."""
+
+    config_entry: ConfigEntry
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        self.conf: dict[str, Any] = {**DEFAULTS, **entry.data, **entry.options}
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=DOMAIN,
+            update_interval=timedelta(seconds=int(self.conf[CONF_UPDATE_INTERVAL])),
+        )
+        self.enabled = True
+        self.hub_device_id: str | None = None
+        self.devices: dict[str, ManagedDevice] = {}
+        for subentry_id, subentry in entry.subentries.items():
+            device_cls = DEVICE_TYPES.get(subentry.subentry_type)
+            if device_cls is None:
+                _LOGGER.warning("Unknown device type %s", subentry.subentry_type)
+                continue
+            self.devices[subentry_id] = device_cls(hass, subentry_id, dict(subentry.data))
+        self._export_raised: bool | None = None
+        self._borrow_active = False
+        self._inputs_bad_since: float | None = None
+        self._failsafe_logged = False
+        # Days the limit was raised / lowered – at most one raise per day.
+        self._export_raised_day: str | None = None
+        self._export_lowered_day: str | None = None
+        self.hdo = HdoSchedule(hass, entry.entry_id, settings_from_conf(self.conf))
+        self._state_store: Store[dict[str, Any]] = Store(hass, 1, f"{DOMAIN}.state.{entry.entry_id}")
+        self._saved_state: dict[str, Any] = {}
+        self._last_decision: tuple[Any, ...] | None = None
+        self._decision: tuple[str | None, list[str], str | None, dict[str, Any]] = (
+            None,
+            [],
+            None,
+            {},
+        )
+        self.structure = config_structure(entry)
+
+    async def async_load_state(self) -> None:
+        """Restore per-device runtime state (e.g. last anti-legionella run)."""
+        self._saved_state = await self._state_store.async_load() or {}
+        for subentry_id, device in self.devices.items():
+            device.restore(self._saved_state.get(subentry_id, {}))
+        export = self._saved_state.get("_export", {})
+        self._export_raised_day = export.get("raised_day")
+        self._export_lowered_day = export.get("lowered_day")
+
+    def _save_state(self) -> None:
+        state: dict[str, Any] = {sid: d.persistent() for sid, d in self.devices.items()}
+        state["_export"] = {
+            "raised_day": self._export_raised_day,
+            "lowered_day": self._export_lowered_day,
+        }
+        if state != self._saved_state:
+            self._saved_state = state
+            self._state_store.async_delay_save(lambda: state, 30)
+
+    # -- configuration --------------------------------------------------------
+    def apply_config(self, entry: ConfigEntry) -> None:
+        """Take over changed tunables without a reload."""
+        self.conf = {**DEFAULTS, **entry.data, **entry.options}
+        self.update_interval = timedelta(seconds=int(self.conf[CONF_UPDATE_INTERVAL]))
+        for subentry_id, subentry in entry.subentries.items():
+            if device := self.devices.get(subentry_id):
+                device.update_config(dict(subentry.data))
+
+    # -- helpers --------------------------------------------------------------
+    def _f(self, key: str) -> float:
+        return float(self.conf[key])
+
+    def _read(self, key: str) -> float | None:
+        return state_float(self.hass, self.conf.get(key))
+
+    @property
+    def dry_run(self) -> bool:
+        return bool(self.conf.get(CONF_DRY_RUN))
+
+    def _input_problems(self) -> tuple[list[str], list[str]]:
+        """(missing, frozen) critical inputs.
+
+        Missing = unavailable / unknown. Frozen = not reported for longer than
+        the timeout. ``last_reported`` moves on every write, even with an
+        unchanged value, so a polled but steady sensor is fine.
+        """
+        timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
+        missing, frozen = [], []
+        now = dt_util.utcnow()
+        for key in (CONF_GRID_POWER, CONF_BATTERY_POWER, CONF_BATTERY_SOC):
+            entity_id = self.conf.get(key)
+            state = self.hass.states.get(entity_id) if entity_id else None
+            if state is None or state_float(self.hass, entity_id) is None:
+                missing.append(str(entity_id))
+                continue
+            seen = getattr(state, "last_reported", None) or state.last_updated
+            if timeout and (now - seen).total_seconds() > timeout:
+                frozen.append(str(entity_id))
+        return missing, frozen
+
+    def _grid_import_w(self) -> float | None:
+        """Grid power, positive = import from grid."""
+        value = self._read(CONF_GRID_POWER)
+        if value is None:
+            return None
+        return value if self.conf[CONF_GRID_IMPORT_POSITIVE] else -value
+
+    def _battery_charge_w(self) -> float | None:
+        """Battery power, positive = charging."""
+        value = self._read(CONF_BATTERY_POWER)
+        if value is None:
+            return None
+        return value if self.conf[CONF_BATTERY_CHARGE_POSITIVE] else -value
+
+    def _hours_until_sunset(self) -> float:
+        sun = self.hass.states.get("sun.sun")
+        if sun is None or sun.state != "above_horizon":
+            return 0.0
+        setting = dt_util.parse_datetime(str(sun.attributes.get("next_setting", "")))
+        if setting is None:
+            return 0.0
+        return max((setting - dt_util.utcnow()).total_seconds() / 3600, 0.0)
+
+    def _hours_without_production(self) -> float | None:
+        """Hours from sunset (or now, at night) to the next sunrise."""
+        sun = self.hass.states.get("sun.sun")
+        if sun is None:
+            return None
+        rising = dt_util.parse_datetime(str(sun.attributes.get("next_rising", "")))
+        setting = dt_util.parse_datetime(str(sun.attributes.get("next_setting", "")))
+        if rising is None:
+            return None
+        if sun.state == "above_horizon" and setting is not None:
+            start = setting
+        else:
+            start = dt_util.utcnow()
+        return max((rising - start).total_seconds() / 3600, 0.0)
+
+    def _night_target(self, snap: DispatchSnapshot) -> float:
+        """SoC needed to get through the time without production.
+
+        (night power × (night hours + extra)) / capacity + reserve, capped by
+        the configured target SoC. Weak production after sunrise and before
+        sunset is covered by the extra hours.
+        """
+        cap = self._f(CONF_BATTERY_TARGET_SOC)
+        if not self.conf.get(CONF_NIGHT_TARGET):
+            return cap
+        hours = self._hours_without_production()
+        if hours is None:
+            return cap
+        hours += self._f(CONF_NIGHT_EXTRA_H)
+        kwh = self._f(CONF_NIGHT_POWER_W) / 1000 * hours
+        need = self._f(CONF_BATTERY_RESERVE_SOC) + kwh / self._f(CONF_BATTERY_CAPACITY_KWH) * 100
+        target = round(min(max(need, self._f(CONF_BATTERY_RESERVE_SOC)), cap), 1)
+        snap.night_hours = round(hours, 2)
+        snap.night_kwh = round(kwh, 2)
+        snap.night_target_soc = target
+        return target
+
+    def _solar_for_devices(self, house_w: float | None) -> float | None:
+        """Solar kWh left today for devices: forecast ÷ safety − house until sunset."""
+        remaining = self._read(CONF_FORECAST_REMAINING)
+        if remaining is None:
+            return None
+        house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
+        return max(remaining / self._f(CONF_FORECAST_SAFETY) - house_kw * self._hours_until_sunset(), 0.0)
+
+    def _update_deadlines(
+        self, snap: DispatchSnapshot, solar_kwh: float | None, battery_need_kwh: float
+    ) -> None:
+        """Let devices decide deadline mode, sharing the expected solar energy.
+
+        Devices are served in priority order. A device with "minimum before
+        battery" gets solar before the battery, otherwise only what is left
+        after charging the battery.
+        """
+        snap.solar_for_devices_kwh = None if solar_kwh is None else round(solar_kwh, 2)
+        now = dt_util.now()
+        left = solar_kwh
+        for device in sorted(self.devices.values(), key=lambda d: d.priority):
+            if left is None:
+                device.solar_kwh = None
+            elif device.config.get(CONF_MIN_BEFORE_BATTERY):
+                device.solar_kwh = left
+            else:
+                device.solar_kwh = max(left - battery_need_kwh, 0.0)
+            used = device.update_deadline(now) if device.enabled else 0.0
+            if left is not None:
+                left = max(left - used, 0.0)
+
+    def _headroom(self) -> Headroom:
+        voltage = self._f(CONF_NOMINAL_VOLTAGE)
+        sensors = self.conf.get(CONF_PHASE_CURRENTS) or []
+        currents = [c for c in (state_float(self.hass, s) for s in sensors) if c is not None]
+        if not currents:
+            return Headroom(voltage=voltage)
+        worst = max(abs(c) for c in currents)
+        amps = self._f(CONF_MAIN_BREAKER_A) - self._f(CONF_BREAKER_MARGIN_A) - worst
+        return Headroom(amps, voltage)
+
+    def _battery_target(
+        self, soc: float, house_w: float | None, snap: DispatchSnapshot
+    ) -> tuple[float, bool]:
+        """Return (effective target SoC, forecast covers battery)."""
+        target = self._night_target(snap)
+        remaining_kwh = self._read(CONF_FORECAST_REMAINING)
+        if remaining_kwh is None:
+            return target, False
+        battery_need = self._f(CONF_BATTERY_CAPACITY_KWH) * max(target - soc, 0.0) / 100
+        house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
+        hours = self._hours_until_sunset()
+        need = (battery_need + house_kw * hours) * self._f(CONF_FORECAST_SAFETY)
+        snap.forecast_remaining_kwh = remaining_kwh
+        snap.forecast_need_kwh = round(need, 2)
+        snap.hours_until_sunset = round(hours, 2)
+        covered = remaining_kwh >= need
+        if covered:
+            return min(target, self._f(CONF_FORECAST_MIN_SOC)), True
+        return target, False
+
+    # -- main loop ------------------------------------------------------------
+    async def _async_update_data(self) -> DispatchSnapshot:
+        snap = DispatchSnapshot()
+        now = time.monotonic()
+
+        await self.hdo.async_refresh()
+        hdo = self.hdo.is_active(dt_util.now())
+        snap.hdo_active = hdo
+        for device in self.devices.values():
+            device.voltage = self._f(CONF_NOMINAL_VOLTAGE)
+            device.hdo_active = hdo
+            device.hdo_schedule = self.hdo if self.hdo.knows_future else None
+            device.read()
+
+        grid = self._grid_import_w()
+        battery = self._battery_charge_w()
+        soc = self._read(CONF_BATTERY_SOC)
+        snap.grid_w, snap.battery_w, snap.battery_soc = grid, battery, soc
+        snap.pv_w = self._read(CONF_PV_POWER)
+        snap.house_w = self._read(CONF_HOUSE_POWER)
+
+        active = [d for d in self.devices.values() if d.enabled]
+        snap.managed_w = sum(d.status.actual_w for d in active)
+
+        if not self.enabled:
+            self._update_deadlines(snap, None, 0.0)
+            snap.reason = "disabled"
+            return self._finish(snap)
+
+        snap.dry_run = self.dry_run
+        missing, frozen = self._input_problems()
+        snap.stale_inputs = missing + frozen
+        if snap.stale_inputs:
+            # Frozen data is already older than the timeout → fail-safe now.
+            # Missing data: hold the current state until the timeout passes.
+            if self._inputs_bad_since is None:
+                self._inputs_bad_since = now
+            timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
+            if frozen or (timeout and now - self._inputs_bad_since >= timeout):
+                return await self._async_failsafe(snap, active, now)
+        else:
+            if self._failsafe_logged:
+                _LOGGER.warning("Inverter data is back – fail-safe ended")
+            self._inputs_bad_since = None
+            self._failsafe_logged = False
+
+        if grid is None or battery is None or soc is None:
+            self._update_deadlines(snap, None, 0.0)
+            snap.reason = "missing_input"
+            _LOGGER.debug("Missing grid/battery/SoC input, holding current state")
+            return self._finish(snap)
+
+        # House sensors (e.g. Growatt load power) include the managed devices;
+        # the forecast check needs the base load only.
+        base_house_w = (
+            max(snap.house_w - snap.managed_w, 0.0) if snap.house_w is not None else None
+        )
+        target_soc, covered = self._battery_target(soc, base_house_w, snap)
+        snap.effective_target_soc = target_soc
+        snap.forecast_covers_battery = covered
+        snap.battery_priority = soc < target_soc
+        self._update_deadlines(
+            snap,
+            self._solar_for_devices(base_house_w),
+            self._f(CONF_BATTERY_CAPACITY_KWH) * max(target_soc - soc, 0.0) / 100,
+        )
+
+        # Full budget = what managed devices use now + battery charging + export,
+        # minus imports. While the battery has priority it first gets up to its
+        # maximum charging power; only what is left beyond that is surplus for
+        # the devices – so running devices give way to the battery as well.
+        full_budget = snap.managed_w - grid + battery - self._f(CONF_RESERVE_W)
+        budget = full_budget
+        if snap.battery_priority:
+            budget -= self._f(CONF_BATTERY_MAX_CHARGE_W)
+        snap.budget_w = budget
+
+        headroom = self._headroom()
+        snap.headroom_a = headroom.amps if math.isfinite(headroom.amps) else None
+
+        # Order: urgent runs (they consume power anyway), then devices below
+        # their minimum, then the rest. The first two groups may also use the
+        # power the battery would get – charging the battery only to discharge
+        # it into the boiler / car in the evening would be a wasted cycle.
+        # Everyone after them shares the budget without the battery's part.
+        borrow = self._borrow_allowed(snap, soc)
+        snap.borrow_active = borrow
+        for device in active:
+            device.borrow = borrow
+        first = [d for d in active if d.status.urgent or d.minimum_pending]
+        rest = [d for d in active if d not in first]
+        consumed = 0.0
+        for device in sorted(first, key=lambda d: (not d.status.urgent, d.priority)):
+            device.status.min_first = not device.status.urgent
+            consumed += device.plan(full_budget - consumed, headroom, now)
+        for device in sorted(rest, key=lambda d: d.priority):
+            device.status.min_first = False
+            consumed += device.plan(budget - consumed, headroom, now)
+        snap.allocated_w = consumed
+
+        await self._async_apply(active)
+
+        await self._control_export_limit(snap, active, soc, base_house_w)
+        snap.reason = "battery_priority" if snap.battery_priority else "dispatching"
+        return self._finish(snap)
+
+    def _finish(self, snap: DispatchSnapshot) -> DispatchSnapshot:
+        snap.export_limit_raised = bool(self._export_raised)
+        self._save_state()
+        self._log_decision(snap)
+        devices = sorted(self.devices.values(), key=lambda d: (not d.status.urgent, d.priority))
+        snap.live_data = self._decision_data(snap, devices, dt_util.now().isoformat())
+        for subentry_id, device in self.devices.items():
+            status = device.status
+            snap.devices[subentry_id] = {
+                "allocated_w": status.allocated_w,
+                "actual_w": status.actual_w,
+                "active": status.active,
+                "urgent": status.urgent,
+                "reason": status.reason if device.enabled else "disabled",
+                **status.extra,
+            }
+        return snap
+
+    def _log_decision(self, snap: DispatchSnapshot) -> None:
+        """Log why the dispatcher decided what it did – only when it changes."""
+        devices = sorted(
+            (d for d in self.devices.values()), key=lambda d: (not d.status.urgent, d.priority)
+        )
+        decision = (
+            snap.reason,
+            snap.dry_run,
+            snap.battery_priority,
+            snap.forecast_covers_battery,
+            bool(self._export_raised),
+            tuple(
+                (d.name, d.enabled, d.status.reason, round(d.status.allocated_w, -2))
+                for d in devices
+            ),
+        )
+        if decision == self._last_decision:
+            (
+                snap.decision,
+                snap.decision_lines,
+                snap.decision_changed_at,
+                snap.decision_data,
+            ) = self._decision
+            return
+        self._last_decision = decision
+        lines = [
+            f"{snap.reason}: grid {_w(snap.grid_w)}, battery {_w(snap.battery_w)}, "
+            f"SoC {snap.battery_soc}% → target {snap.effective_target_soc}% "
+            f"({'battery first' if snap.battery_priority else 'devices first'}), "
+            f"budget {_w(snap.budget_w)}, allocated {_w(snap.allocated_w)}, "
+            f"export limit {'raised' if self._export_raised else 'normal'}"
+            + ("" if snap.hdo_active is None else f", HDO {'on' if snap.hdo_active else 'off'}")
+            + (", rounding up from battery" if snap.borrow_active else "")
+            + (" [WATCH ONLY]" if snap.dry_run else "")
+            + (f", stale: {', '.join(snap.stale_inputs)}" if snap.stale_inputs else "")
+        ]
+        if snap.forecast_remaining_kwh is not None:
+            lines.append(
+                f"  forecast {snap.forecast_remaining_kwh} kWh vs need "
+                f"{snap.forecast_need_kwh} kWh ({snap.hours_until_sunset} h to sunset) → "
+                f"{'covers' if snap.forecast_covers_battery else 'does not cover'}"
+            )
+        if snap.headroom_a is not None:
+            lines.append(f"  breaker headroom {snap.headroom_a:.1f} A")
+        for d in devices:
+            status = d.status
+            extra = ", ".join(f"{k}={v}" for k, v in status.extra.items() if v is not None)
+            lines.append(
+                f"  [{d.priority}] {d.name}: {status.reason if d.enabled else 'disabled'}, "
+                f"allocated {_w(status.allocated_w)}, actual {_w(status.actual_w)}"
+                + (" URGENT" if status.urgent else "")
+                + (" MIN-FIRST" if status.min_first else "")
+                + (f" ({extra})" if extra else "")
+            )
+        changed_at = dt_util.now().isoformat()
+        self._decision = (
+            self._summary(snap, devices),
+            lines,
+            changed_at,
+            self._decision_data(snap, devices, changed_at),
+        )
+        snap.decision, snap.decision_lines, snap.decision_changed_at, snap.decision_data = (
+            self._decision
+        )
+        _LOGGER.debug("Decision changed\n%s", "\n".join(lines))
+
+    def _decision_data(
+        self, snap: DispatchSnapshot, devices: list[ManagedDevice], changed_at: str
+    ) -> dict[str, Any]:
+        """Structured decision for dashboards (localized reason texts)."""
+        cs = (self.hass.config.language or "").startswith("cs")
+        text = _SUMMARY_CS if cs else _SUMMARY_EN
+        return {
+            "changed_at": changed_at,
+            "reason": snap.reason,
+            "headline": self._summary(snap, []),
+            "grid_w": snap.grid_w,
+            "pv_w": snap.pv_w,
+            "house_w": snap.house_w,
+            "managed_w": round(snap.managed_w),
+            "battery_w": snap.battery_w,
+            "battery_soc": snap.battery_soc,
+            "battery_target_soc": snap.effective_target_soc,
+            "battery_priority": snap.battery_priority,
+            "budget_w": round(snap.budget_w),
+            "allocated_w": round(snap.allocated_w),
+            "forecast_kwh": snap.forecast_remaining_kwh,
+            "forecast_need_kwh": snap.forecast_need_kwh,
+            "forecast_covers": snap.forecast_covers_battery,
+            "export_raised": bool(self._export_raised),
+            "hdo": snap.hdo_active,
+            "borrow": snap.borrow_active,
+            "dry_run": snap.dry_run,
+            "stale_inputs": snap.stale_inputs,
+            "headroom_a": None if snap.headroom_a is None else round(snap.headroom_a, 1),
+            "devices": [
+                {
+                    "name": d.name,
+                    "kind": d.kind,
+                    "priority": d.priority,
+                    "state": (
+                        text["reasons"].get(d.status.reason, d.status.reason)
+                        if d.enabled
+                        else text["reasons"]["disabled"]
+                    ),
+                    "active": d.status.active,
+                    "allocated_w": round(d.status.allocated_w),
+                    "actual_w": round(d.status.actual_w),
+                    "urgent": d.status.urgent,
+                    "min_first": d.status.min_first,
+                    "current": d.status.extra.get("current"),
+                    "phases": d.status.extra.get("phases"),
+                    "temperature": d.status.extra.get("temperature"),
+                    "soc": d.status.extra.get("soc"),
+                    "plan": d.status.extra.get("deadline_plan"),
+                    "at_risk": d.status.extra.get("deadline_at_risk"),
+                }
+                for d in devices
+            ],
+        }
+
+    def _summary(self, snap: DispatchSnapshot, devices: list[ManagedDevice]) -> str:
+        """One line for the 'last decision' entity and the logbook (≤ 255 chars)."""
+        cs = (self.hass.config.language or "").startswith("cs")
+        text = _SUMMARY_CS if cs else _SUMMARY_EN
+        if snap.reason in ("disabled", "missing_input", "failsafe"):
+            head = text[snap.reason]
+        else:
+            head = text["battery"].format(
+                soc=_n(snap.battery_soc),
+                target=_n(snap.effective_target_soc),
+                who=text["battery_first" if snap.battery_priority else "devices_first"],
+            )
+            if snap.hdo_active is not None:
+                head += " · " + text["hdo_on" if snap.hdo_active else "hdo_off"]
+        if snap.dry_run:
+            head = f"{text['dry_run']} · {head}"
+        parts = [head]
+        for d in devices:
+            status = d.status
+            reason = text["reasons"].get(status.reason, status.reason) if d.enabled else text["reasons"]["disabled"]
+            part = f"{d.name}: {reason}"
+            if status.allocated_w:
+                part += f" {status.allocated_w:.0f} W"
+            if d.kind == "ev_charger" and status.active:
+                part += f" ({status.extra.get('phases')}f {status.extra.get('current')} A)"
+            parts.append(part)
+        summary = " · ".join(parts)
+        return summary if len(summary) <= 255 else summary[:252] + "…"
+
+    async def _control_export_limit(
+        self,
+        snap: DispatchSnapshot,
+        active: list[ManagedDevice],
+        soc: float,
+        house_w: float | None,
+    ) -> None:
+        """Raise the limit at most once a day, lower it only when nothing can store.
+
+        Raise (allow export) when production runs, something can still store
+        energy (a device wants power) and the forecast says there will be
+        surplus beyond the house and the battery – the raised limit makes that
+        hidden surplus visible for the devices. Lower it only when there is
+        nowhere to store (battery full, no device wants power) while producing;
+        the end of production needs no write. Few writes spare the inverter's
+        memory.
+        """
+        if not self._export_controlled():
+            self._export_raised = None
+            return
+        self._sync_export_state()
+        today = dt_util.now().date().isoformat()
+        devices_want = any(d.status.wants_power and not d.status.urgent for d in active)
+        can_store = devices_want or soc < self._f(CONF_BATTERY_FULL_SOC)
+        sun = self.hass.states.get("sun.sun")
+        producing = sun is None or sun.state == "above_horizon"
+
+        if self._export_raised:
+            # Without production nothing flows out, so the evening needs no
+            # write – the limit only goes down when nothing can store any more.
+            if producing and not can_store:
+                await self._set_export_raised(False)
+                self._export_lowered_day = today
+            return
+
+        if not producing or not devices_want:
+            return
+        if self._export_raised_day == today and not self.conf.get(CONF_EXPORT_RERAISE):
+            return  # already raised (and lowered again) today
+        if not self._export_makes_sense(snap, active, soc, house_w):
+            return
+        await self._set_export_raised(True)
+        self._export_raised_day = today
+
+    async def _async_apply(self, active: list[ManagedDevice]) -> None:
+        if self.dry_run:
+            return  # "watch only": decisions are shown, nothing is switched
+        for device in active:
+            try:
+                await device.apply()
+            except Exception:  # noqa: BLE001 - one device must not stop the others
+                _LOGGER.exception("Failed to control %s", device.name)
+
+    async def _async_failsafe(
+        self, snap: DispatchSnapshot, active: list[ManagedDevice], now: float
+    ) -> DispatchSnapshot:
+        """Inverter data lost: stop surplus-driven loads, keep deadline runs.
+
+        Devices switch off through their normal delays and minimum times.
+        Deadline runs (boiler minimum, car by the morning) do not depend on the
+        inverter data and continue. The export limit is left as it is.
+        """
+        if not self._failsafe_logged:
+            _LOGGER.warning(
+                "No fresh data from %s – fail-safe: surplus-driven devices are stopped",
+                ", ".join(snap.stale_inputs),
+            )
+            self._failsafe_logged = True
+        self._update_deadlines(snap, None, 0.0)
+        headroom = self._headroom()
+        for device in sorted(active, key=lambda d: (not d.status.urgent, d.priority)):
+            device.borrow = False
+            device.status.min_first = False
+            device.plan(0.0 if device.status.urgent else -1e9, headroom, now)
+        await self._async_apply(active)
+        snap.reason = "failsafe"
+        return self._finish(snap)
+
+    def _borrow_allowed(self, snap: DispatchSnapshot, soc: float) -> bool:
+        """Round devices up from the battery: from "full" down to full − band.
+
+        Only while producing and the battery has no priority. The hysteresis
+        keeps the battery in shallow cycles at the top and the devices from
+        toggling; their own delays and minimum times still apply.
+        """
+        sun = self.hass.states.get("sun.sun")
+        producing = sun is None or sun.state == "above_horizon"
+        full = self._f(CONF_BATTERY_FULL_SOC)
+        if not self.conf.get(CONF_BATTERY_BORROW) or snap.battery_priority or not producing:
+            self._borrow_active = False
+        elif soc >= full:
+            self._borrow_active = True
+        elif soc < full - BORROW_SOC_BAND:
+            self._borrow_active = False
+        return self._borrow_active
+
+    def _export_makes_sense(
+        self, snap: DispatchSnapshot, active: list[ManagedDevice], soc: float, house_w: float | None
+    ) -> bool:
+        """Will there be surplus for the devices beyond the house and the battery?"""
+        remaining = self._read(CONF_FORECAST_REMAINING)
+        if remaining is None:
+            return True
+        if any(d.minimum_pending for d in active):
+            return True  # served before the battery
+        house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
+        battery_kwh = self._f(CONF_BATTERY_CAPACITY_KWH) * max(self._f(CONF_BATTERY_FULL_SOC) - soc, 0.0) / 100
+        expected = remaining / self._f(CONF_FORECAST_SAFETY) - house_kw * self._hours_until_sunset()
+        return expected - battery_kwh > 0
+
+    def _export_controlled(self) -> bool:
+        return bool(self.conf.get(CONF_EXPORT_LIMIT_ENTITY)) and bool(self.conf.get(CONF_EXPORT_CONTROL))
+
+    def _sync_export_state(self) -> None:
+        """After a restart take over the current limit instead of rewriting it."""
+        if self._export_raised is not None:
+            return
+        current = state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY))
+        if current is None:
+            return
+        raised, normal = self._f(CONF_EXPORT_LIMIT_RAISED), self._f(CONF_EXPORT_LIMIT_NORMAL)
+        self._export_raised = abs(current - raised) < abs(current - normal)
+
+    async def _set_export_raised(self, raised: bool, force: bool = False) -> None:
+        entity_id = self.conf.get(CONF_EXPORT_LIMIT_ENTITY)
+        if not self._export_controlled():
+            # Hands off: the limit stays exactly as the user set it.
+            self._export_raised = None
+            return
+        if raised == self._export_raised and not force:
+            return
+        if self.dry_run:
+            _LOGGER.info("Watch only: would set the export limit %s", "raised" if raised else "normal")
+            self._export_raised = raised
+            return
+        value = self._f(CONF_EXPORT_LIMIT_RAISED if raised else CONF_EXPORT_LIMIT_NORMAL)
+        current = state_float(self.hass, entity_id)
+        try:
+            if current != value:
+                _LOGGER.info("Setting export limit to %s", value)
+                await async_set_number(self.hass, entity_id, value)
+            self._export_raised = raised
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to set export limit on %s", entity_id)
+
+    # -- lifecycle ------------------------------------------------------------
+    async def async_set_enabled(self, enabled: bool) -> None:
+        self.enabled = enabled
+        if not enabled:
+            await self.async_release_all()
+        await self.async_request_refresh()
+
+    async def async_set_device_enabled(self, subentry_id: str, enabled: bool) -> None:
+        device = self.devices[subentry_id]
+        device.enabled = enabled
+        if not enabled:
+            await device.release()
+        await self.async_request_refresh()
+
+    async def async_release_all(self) -> None:
+        for device in self.devices.values():
+            try:
+                await device.release()
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Failed to release %s", device.name)
+        if self._export_controlled():
+            await self._set_export_raised(False, force=True)
+
+
+def config_structure(entry: ConfigEntry) -> tuple[Any, ...]:
+    """Everything except tunables – a change here needs a full reload."""
+    conf = {**entry.data, **entry.options}
+    main = tuple(sorted((k, repr(v)) for k, v in conf.items() if k not in HUB_TUNABLE_KEYS))
+    devices = []
+    for subentry_id, subentry in sorted(entry.subentries.items()):
+        tunable = {t.key for t in DEVICE_TUNABLES.get(subentry.subentry_type, ())}
+        data = tuple(sorted((k, repr(v)) for k, v in subentry.data.items() if k not in tunable))
+        devices.append((subentry_id, subentry.subentry_type, subentry.title, data))
+    return main, tuple(devices)
+
+
+def _w(value: float | None) -> str:
+    return "?" if value is None else f"{value:.0f} W"
+
+
+def _n(value: float | None) -> str:
+    return "?" if value is None else f"{value:.0f}"
+
+
+_SUMMARY_CS: dict[str, Any] = {
+    "disabled": "Optimalizace vypnuta",
+    "missing_input": "Chybí data ze střídače",
+    "failsafe": "Pojistka: chybí data ze střídače, přebytková zařízení se vypínají",
+    "dry_run": "Jen sledování",
+    "battery": "Baterie {soc} % → cíl {target} % ({who})",
+    "battery_first": "přednost baterie",
+    "devices_first": "přednost zařízení",
+    "hdo_on": "HDO",
+    "hdo_off": "VT",
+    "reasons": {
+        "init": "start", "disabled": "neřízeno", "unavailable": "nedostupné",
+        "not_connected": "auto nepřipojeno", "temperature_reached": "nahřáto",
+        "waiting_for_surplus": "čeká na přebytek", "starting": "spouští se",
+        "running": "běží", "charging": "nabíjí", "no_surplus": "málo přebytků",
+        "min_on_time": "min. doba zapnutí", "min_off_time": "min. doba vypnutí",
+        "deadline_heating": "nahřívá do termínu", "deadline_charging": "nabíjí do termínu",
+        "breaker_limit": "omezeno jističem", "waiting_for_hdo": "čeká na HDO",
+    },
+}
+
+_SUMMARY_EN: dict[str, Any] = {
+    "disabled": "Optimization disabled",
+    "missing_input": "Missing inverter data",
+    "failsafe": "Fail-safe: no inverter data, surplus devices are stopped",
+    "dry_run": "Watch only",
+    "battery": "Battery {soc} % → target {target} % ({who})",
+    "battery_first": "battery first",
+    "devices_first": "devices first",
+    "hdo_on": "low tariff",
+    "hdo_off": "high tariff",
+    "reasons": {
+        "init": "starting", "disabled": "not controlled", "unavailable": "unavailable",
+        "not_connected": "car not connected", "temperature_reached": "hot",
+        "waiting_for_surplus": "waiting for surplus", "starting": "starting",
+        "running": "running", "charging": "charging", "no_surplus": "low surplus",
+        "min_on_time": "min on time", "min_off_time": "min off time",
+        "deadline_heating": "heating for deadline", "deadline_charging": "charging for deadline",
+        "breaker_limit": "breaker limit", "waiting_for_hdo": "waiting for HDO",
+    },
+}

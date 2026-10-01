@@ -1,0 +1,17 @@
+# Vývojový Home Assistant s integrací FVE Optimizer a simulátorem FVE.
+#   docker compose up -d          # start (http://localhost:8123)
+#   docker compose restart        # po změně kódu integrace
+#   docker compose logs -f        # log (fve_optimizer je na úrovni debug)
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: fve-optimizer-dev
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+    environment:
+      - TZ=Europe/Prague
+    volumes:
+      - ./config:/config
+      # Integrace se čte přímo ze zdrojáků projektu.
+      - ../custom_components/fve_optimizer:/config/custom_components/fve_optimizer:ro

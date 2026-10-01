@@ -1,0 +1,28 @@
+# Vývojová konfigurace pro ladění FVE Optimizeru.
+default_config:
+
+homeassistant:
+  name: FVE Dev
+  time_zone: Europe/Prague
+  country: CZ
+  unit_system: metric
+  # Přibližný střed ČR – kvůli sun.sun (západ slunce pro predikci).
+  latitude: 49.8
+  longitude: 15.5
+  elevation: 300
+  packages: !include_dir_named packages
+
+logger:
+  default: warning
+  logs:
+    custom_components.fve_optimizer: debug
+
+# Ladicí dashboard – generuje ho dev/make_dashboard.py.
+lovelace:
+  dashboards:
+    fve-dev:
+      mode: yaml
+      title: FVE Optimizer
+      icon: mdi:solar-power
+      show_in_sidebar: true
+      filename: dashboards/fve.yaml

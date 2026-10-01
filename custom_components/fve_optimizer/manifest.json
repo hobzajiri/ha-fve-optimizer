@@ -1,0 +1,13 @@
+{
+  "domain": "fve_optimizer",
+  "name": "FVE Optimizer",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["frontend", "http"],
+  "documentation": "https://github.com/jirihobza/fve-optimizer",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/jirihobza/fve-optimizer/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

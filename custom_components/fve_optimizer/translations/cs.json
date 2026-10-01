@@ -1,0 +1,782 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Toky energie",
+        "description": "Senzory ze střídače. Znaménka ověř v Nástrojích pro vývojáře: při odběru ze sítě a při nabíjení baterie.",
+        "data": {
+          "grid_power": "Výkon sítě",
+          "grid_import_positive": "Odběr ze sítě je kladný",
+          "battery_power": "Výkon baterie",
+          "battery_charge_positive": "Nabíjení baterie je kladné",
+          "battery_soc": "SoC baterie",
+          "pv_power": "Výkon FV (volitelné)",
+          "house_power": "Spotřeba domu (volitelné)"
+        },
+        "data_description": {
+          "grid_power": "Okamžitý výkon na elektroměru ve W.",
+          "grid_import_positive": "Vypni, pokud tvůj senzor ukazuje odběr záporně.",
+          "battery_power": "Okamžitý výkon baterie ve W.",
+          "battery_charge_positive": "Vypni, pokud senzor ukazuje nabíjení záporně.",
+          "house_power": "Celková spotřeba (např. load power z Growattu). Spotřeba řízených zařízení se odečte automaticky. Použije se místo průměrné spotřeby při výpočtu podle predikce."
+        }
+      },
+      "battery": {
+        "title": "Baterie a predikce",
+        "description": "Baterie má přednost do cílového SoC. S cílem podle doby bez výroby se cíl počítá tak, aby baterie pokryla večer a noc. Když predikce ukáže, že zbývající výroba do západu slunce pokryje dobití i spotřebu domu, cíl se sníží a přebytky dostanou spotřebiče dřív.",
+        "data": {
+          "battery_capacity_kwh": "Kapacita baterie",
+          "battery_target_soc": "Maximální cílové SoC",
+          "forecast_remaining_today": "Zbývající predikce dnes (Solcast)",
+          "forecast_min_soc": "Cílové SoC při dostatečné predikci",
+          "forecast_safety_factor": "Bezpečnostní koeficient predikce",
+          "house_avg_power_w": "Průměrný příkon domu přes den",
+          "night_target": "Cíl podle doby bez výroby",
+          "night_power_w": "Příkon domu bez výroby",
+          "night_extra_hours": "Doba bez výroby navíc",
+          "battery_reserve_soc": "Rezerva baterie",
+          "battery_max_charge_w": "Max. nabíjecí výkon baterie"
+        },
+        "data_description": {
+          "forecast_remaining_today": "Senzor v kWh, např. sensor.solcast_pv_forecast_forecast_remaining_today.",
+          "forecast_safety_factor": "1,3 = predikce musí slibovat o 30 % víc, než je potřeba (rezerva na chybu predikce).",
+          "battery_capacity_kwh": "Využitelná kapacita domácí baterie.",
+          "battery_target_soc": "Strop. S cílem podle doby bez výroby je skutečný cíl obvykle nižší.",
+          "forecast_min_soc": "Nižší cíl, když predikce do západu slunce pokryje dobití baterie i spotřebu domu. Zbytek přebytků dostanou zařízení dřív a baterie se dobije později.",
+          "house_avg_power_w": "Průměrný příkon ve W (typicky 400–800 W), ne denní spotřeba v kWh. Bez řízených zařízení. Použije se jen, když není zadaný senzor spotřeby domu.",
+          "night_target": "Baterie má přednost jen do SoC, které pokryje spotřebu od západu do východu slunce (+ rezerva). Zbytek přebytků dostanou zařízení.",
+          "night_power_w": "Průměrný příkon večer a v noci (W).",
+          "night_extra_hours": "Hodiny navíc ke tmě – slabá výroba po východu a před západem slunce.",
+          "battery_reserve_soc": "SoC, které má v baterii zůstat ráno (minimální vybití).",
+          "battery_max_charge_w": "Kolik baterie umí nabírat (W). Dokud má baterie přednost, zařízení dostanou jen přebytek nad tento výkon – i běžící zařízení uhnou."
+        }
+      },
+      "control": {
+        "title": "Řízení",
+        "data": {
+          "export_limit_entity": "Entita limitu přetoku",
+          "export_limit_normal": "Běžný limit přetoku",
+          "export_limit_raised": "Zvýšený limit přetoku",
+          "phase_current_sensors": "Senzory proudu fází",
+          "main_breaker_a": "Hlavní jistič",
+          "breaker_margin_a": "Rezerva jističe",
+          "reserve_w": "Rezerva výkonu",
+          "update_interval": "Interval regulace",
+          "nominal_voltage": "Jmenovité napětí",
+          "export_limit_control": "Řídit limit přetoku",
+          "export_limit_reraise": "Povolit přetok znovu během dne",
+          "battery_full_soc": "SoC plné baterie",
+          "battery_borrow": "Dorovnávat z plné baterie",
+          "input_timeout_s": "Časový limit dat",
+          "dry_run": "Jen sledovat"
+        },
+        "data_description": {
+          "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
+          "export_limit_normal": "Hodnota mimo nabíjení/ohřev, např. 0.",
+          "phase_current_sensors": "Proudy L1–L3 na elektroměru. Bez nich se jistič nehlídá.",
+          "reserve_w": "O kolik méně se rozdělí, aby se nebralo ze sítě.",
+          "nominal_voltage": "Napětí fáze pro přepočet proudu na výkon.",
+          "export_limit_raised": "Hodnota, když zařízení berou přebytky, např. 100 % nebo 10000 W.",
+          "export_limit_control": "Zapnuto: limit se zvedne jednou denně ráno, když je kam ukládat a predikce slibuje přebytek nad spotřebu domu a baterie; sníží se jen tehdy, když není kam ukládat (plná baterie, nahřátý bojler, nabité/odpojené auto). Večer bez výroby se nemění. Vypnuto: limit zůstane, jak ho nastavíš.",
+          "export_limit_reraise": "Po snížení limitu ho během dne znovu zvedne, když se objeví kam ukládat (např. přijede auto). Vypnuto = nejvýš jednou denně (méně zápisů do střídače).",
+          "battery_full_soc": "Od tohoto SoC se baterie bere jako plná (už neukládá).",
+          "battery_borrow": "Když je baterie plná, zařízení se zaokrouhlí na nejbližší krok – auto o 1 A, bojler se zapne už při polovině příkonu. Rozdíl dorovná baterie, místo aby přebytek tekl do sítě. Půjčuje se jen do SoC plné baterie − 5 %, pak se baterie dobije.",
+          "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
+          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci."
+        },
+        "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
+      },
+      "hdo": {
+        "title": "HDO – nízký tarif",
+        "description": "Odkud brát časy nízkého tarifu. Použije je dohřev bojleru do termínu (jen v HDO) a diagnostika.",
+        "data": {
+          "hdo_source": "Zdroj HDO"
+        }
+      },
+      "hdo_egd": {
+        "title": "HDO – EG.D",
+        "description": "Kód HDO najdeš na přijímači HDO, na elektroměru nebo na egd.cz (Časy platnosti nízkého tarifu). Zadej ho jako A1B4DP5, nebo kód povelu (např. 405, u chytrého elektroměru Cd56).",
+        "data": {
+          "hdo_egd_psc": "PSČ odběrného místa",
+          "hdo_egd_code": "Kód HDO"
+        }
+      },
+      "hdo_pre": {
+        "title": "HDO – PRE",
+        "description": "Povel HDO najdeš v Moje PRE nebo na přijímači HDO.",
+        "data": {
+          "hdo_pre_povel": "Povel HDO"
+        }
+      },
+      "hdo_calendar": {
+        "title": "HDO – kalendář",
+        "description": "Kalendář, jehož události jsou okna nízkého tarifu (např. „HDO – aktuální signál“ z integrace ČEZ Distribuce).",
+        "data": {
+          "hdo_entity": "Kalendář"
+        }
+      },
+      "hdo_entity": {
+        "title": "HDO – entita",
+        "description": "Entita zapnutá v nízkém tarifu (přijímač HDO, rozvrh…). Budoucí okna z ní nejsou známá, proto se dohřívá v každém okně HDO.",
+        "data": {
+          "hdo_entity": "Entita HDO"
+        }
+      },
+      "hdo_manual": {
+        "title": "HDO – ruční časy",
+        "description": "Časy nízkého tarifu, např. 00:00-06:00; 14:00-17:00. Svátky se berou jako víkend.",
+        "data": {
+          "hdo_manual_workday": "Pracovní dny",
+          "hdo_manual_weekend": "Víkend a svátky (prázdné = stejné)"
+        }
+      }
+    },
+    "error": {
+      "raised_not_above_normal": "Zvýšený limit musí být vyšší než běžný.",
+      "raised_too_low_watts": "Entita limitu je ve W. Zvýšený limit pod 1000 W skoro nic neukáže, nejspíš má být např. 10000.",
+      "egd_code_not_found": "Pro tento kód HDO a PSČ EG.D nemá rozvrh.",
+      "egd_unknown_psc": "EG.D toto PSČ nezná.",
+      "cannot_connect": "Nepodařilo se spojit s distributorem, zkus to znovu.",
+      "pre_povel_not_found": "Pro tento povel PRE nevrátilo rozvrh.",
+      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Toky energie",
+        "description": "Senzory ze střídače. Znaménka ověř v Nástrojích pro vývojáře: při odběru ze sítě a při nabíjení baterie.",
+        "data": {
+          "grid_power": "Výkon sítě",
+          "grid_import_positive": "Odběr ze sítě je kladný",
+          "battery_power": "Výkon baterie",
+          "battery_charge_positive": "Nabíjení baterie je kladné",
+          "battery_soc": "SoC baterie",
+          "pv_power": "Výkon FV (volitelné)",
+          "house_power": "Spotřeba domu (volitelné)"
+        },
+        "data_description": {
+          "grid_power": "Okamžitý výkon na elektroměru ve W.",
+          "grid_import_positive": "Vypni, pokud tvůj senzor ukazuje odběr záporně.",
+          "battery_power": "Okamžitý výkon baterie ve W.",
+          "battery_charge_positive": "Vypni, pokud senzor ukazuje nabíjení záporně.",
+          "house_power": "Celková spotřeba (např. load power z Growattu). Spotřeba řízených zařízení se odečte automaticky. Použije se místo průměrné spotřeby při výpočtu podle predikce."
+        }
+      },
+      "battery": {
+        "title": "Baterie a predikce",
+        "description": "Baterie má přednost do cílového SoC. S cílem podle doby bez výroby se cíl počítá tak, aby baterie pokryla večer a noc. Když predikce ukáže, že zbývající výroba do západu slunce pokryje dobití i spotřebu domu, cíl se sníží a přebytky dostanou spotřebiče dřív.",
+        "data": {
+          "battery_capacity_kwh": "Kapacita baterie",
+          "battery_target_soc": "Maximální cílové SoC",
+          "forecast_remaining_today": "Zbývající predikce dnes (Solcast)",
+          "forecast_min_soc": "Cílové SoC při dostatečné predikci",
+          "forecast_safety_factor": "Bezpečnostní koeficient predikce",
+          "house_avg_power_w": "Průměrný příkon domu přes den",
+          "night_target": "Cíl podle doby bez výroby",
+          "night_power_w": "Příkon domu bez výroby",
+          "night_extra_hours": "Doba bez výroby navíc",
+          "battery_reserve_soc": "Rezerva baterie",
+          "battery_max_charge_w": "Max. nabíjecí výkon baterie"
+        },
+        "data_description": {
+          "forecast_remaining_today": "Senzor v kWh, např. sensor.solcast_pv_forecast_forecast_remaining_today.",
+          "forecast_safety_factor": "1,3 = predikce musí slibovat o 30 % víc, než je potřeba (rezerva na chybu predikce).",
+          "battery_capacity_kwh": "Využitelná kapacita domácí baterie.",
+          "battery_target_soc": "Strop. S cílem podle doby bez výroby je skutečný cíl obvykle nižší.",
+          "forecast_min_soc": "Nižší cíl, když predikce do západu slunce pokryje dobití baterie i spotřebu domu. Zbytek přebytků dostanou zařízení dřív a baterie se dobije později.",
+          "house_avg_power_w": "Průměrný příkon ve W (typicky 400–800 W), ne denní spotřeba v kWh. Bez řízených zařízení. Použije se jen, když není zadaný senzor spotřeby domu.",
+          "night_target": "Baterie má přednost jen do SoC, které pokryje spotřebu od západu do východu slunce (+ rezerva). Zbytek přebytků dostanou zařízení.",
+          "night_power_w": "Průměrný příkon večer a v noci (W).",
+          "night_extra_hours": "Hodiny navíc ke tmě – slabá výroba po východu a před západem slunce.",
+          "battery_reserve_soc": "SoC, které má v baterii zůstat ráno (minimální vybití).",
+          "battery_max_charge_w": "Kolik baterie umí nabírat (W). Dokud má baterie přednost, zařízení dostanou jen přebytek nad tento výkon – i běžící zařízení uhnou."
+        }
+      },
+      "control": {
+        "title": "Řízení",
+        "data": {
+          "export_limit_entity": "Entita limitu přetoku",
+          "export_limit_normal": "Běžný limit přetoku",
+          "export_limit_raised": "Zvýšený limit přetoku",
+          "phase_current_sensors": "Senzory proudu fází",
+          "main_breaker_a": "Hlavní jistič",
+          "breaker_margin_a": "Rezerva jističe",
+          "reserve_w": "Rezerva výkonu",
+          "update_interval": "Interval regulace",
+          "nominal_voltage": "Jmenovité napětí",
+          "export_limit_control": "Řídit limit přetoku",
+          "export_limit_reraise": "Povolit přetok znovu během dne",
+          "battery_full_soc": "SoC plné baterie",
+          "battery_borrow": "Dorovnávat z plné baterie",
+          "input_timeout_s": "Časový limit dat",
+          "dry_run": "Jen sledovat"
+        },
+        "data_description": {
+          "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
+          "export_limit_normal": "Hodnota mimo nabíjení/ohřev, např. 0.",
+          "phase_current_sensors": "Proudy L1–L3 na elektroměru. Bez nich se jistič nehlídá.",
+          "reserve_w": "O kolik méně se rozdělí, aby se nebralo ze sítě.",
+          "nominal_voltage": "Napětí fáze pro přepočet proudu na výkon.",
+          "export_limit_raised": "Hodnota, když zařízení berou přebytky, např. 100 % nebo 10000 W.",
+          "export_limit_control": "Zapnuto: limit se zvedne jednou denně ráno, když je kam ukládat a predikce slibuje přebytek nad spotřebu domu a baterie; sníží se jen tehdy, když není kam ukládat (plná baterie, nahřátý bojler, nabité/odpojené auto). Večer bez výroby se nemění. Vypnuto: limit zůstane, jak ho nastavíš.",
+          "export_limit_reraise": "Po snížení limitu ho během dne znovu zvedne, když se objeví kam ukládat (např. přijede auto). Vypnuto = nejvýš jednou denně (méně zápisů do střídače).",
+          "battery_full_soc": "Od tohoto SoC se baterie bere jako plná (už neukládá).",
+          "battery_borrow": "Když je baterie plná, zařízení se zaokrouhlí na nejbližší krok – auto o 1 A, bojler se zapne už při polovině příkonu. Rozdíl dorovná baterie, místo aby přebytek tekl do sítě. Půjčuje se jen do SoC plné baterie − 5 %, pak se baterie dobije.",
+          "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
+          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci."
+        },
+        "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
+      },
+      "hdo": {
+        "title": "HDO – nízký tarif",
+        "description": "Odkud brát časy nízkého tarifu. Použije je dohřev bojleru do termínu (jen v HDO) a diagnostika.",
+        "data": {
+          "hdo_source": "Zdroj HDO"
+        }
+      },
+      "hdo_egd": {
+        "title": "HDO – EG.D",
+        "description": "Kód HDO najdeš na přijímači HDO, na elektroměru nebo na egd.cz (Časy platnosti nízkého tarifu). Zadej ho jako A1B4DP5, nebo kód povelu (např. 405, u chytrého elektroměru Cd56).",
+        "data": {
+          "hdo_egd_psc": "PSČ odběrného místa",
+          "hdo_egd_code": "Kód HDO"
+        }
+      },
+      "hdo_pre": {
+        "title": "HDO – PRE",
+        "description": "Povel HDO najdeš v Moje PRE nebo na přijímači HDO.",
+        "data": {
+          "hdo_pre_povel": "Povel HDO"
+        }
+      },
+      "hdo_calendar": {
+        "title": "HDO – kalendář",
+        "description": "Kalendář, jehož události jsou okna nízkého tarifu (např. „HDO – aktuální signál“ z integrace ČEZ Distribuce).",
+        "data": {
+          "hdo_entity": "Kalendář"
+        }
+      },
+      "hdo_entity": {
+        "title": "HDO – entita",
+        "description": "Entita zapnutá v nízkém tarifu (přijímač HDO, rozvrh…). Budoucí okna z ní nejsou známá, proto se dohřívá v každém okně HDO.",
+        "data": {
+          "hdo_entity": "Entita HDO"
+        }
+      },
+      "hdo_manual": {
+        "title": "HDO – ruční časy",
+        "description": "Časy nízkého tarifu, např. 00:00-06:00; 14:00-17:00. Svátky se berou jako víkend.",
+        "data": {
+          "hdo_manual_workday": "Pracovní dny",
+          "hdo_manual_weekend": "Víkend a svátky (prázdné = stejné)"
+        }
+      }
+    },
+    "error": {
+      "raised_not_above_normal": "Zvýšený limit musí být vyšší než běžný.",
+      "raised_too_low_watts": "Entita limitu je ve W. Zvýšený limit pod 1000 W skoro nic neukáže, nejspíš má být např. 10000.",
+      "egd_code_not_found": "Pro tento kód HDO a PSČ EG.D nemá rozvrh.",
+      "egd_unknown_psc": "EG.D toto PSČ nezná.",
+      "cannot_connect": "Nepodařilo se spojit s distributorem, zkus to znovu.",
+      "pre_povel_not_found": "Pro tento povel PRE nevrátilo rozvrh.",
+      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00."
+    }
+  },
+  "config_subentries": {
+    "switched": {
+      "entry_type": "Spínané zařízení",
+      "initiate_flow": {
+        "user": "Přidat spínané zařízení (bojler, topení…)",
+        "reconfigure": "Upravit zařízení"
+      },
+      "step": {
+        "user": {
+          "title": "Přidat spínané zařízení (bojler, topení…)",
+          "data": {
+            "name": "Název",
+            "switch_entity": "Spínač",
+            "nominal_power_w": "Příkon",
+            "phases": "Fáze",
+            "power_sensor": "Senzor výkonu (volitelné)",
+            "temperature_sensor": "Teplota vody (volitelné)",
+            "max_temperature": "Maximální teplota z přebytků",
+            "min_on_time_s": "Minimální doba zapnutí",
+            "min_off_time_s": "Minimální doba vypnutí",
+            "priority": "Priorita",
+            "on_delay_s": "Zpoždění zapnutí",
+            "off_delay_s": "Zpoždění vypnutí",
+            "on_margin_w": "Rezerva pro zapnutí",
+            "off_tolerance_w": "Tolerance před vypnutím",
+            "deadline_enabled": "Nahřát do termínu",
+            "deadline_time": "Termín nahřátí",
+            "deadline_temperature": "Teplota v termínu",
+            "tank_volume_l": "Objem nádrže",
+            "deadline_hysteresis": "Hystereze termínu",
+            "deadline_safety_factor": "Rezerva doby ohřevu",
+            "max_temperature_hysteresis": "Hystereze maximální teploty",
+            "deadline_hdo_only": "Dohřívat do termínu jen v HDO",
+            "deadline_earliest": "Dohřev ze sítě nejdříve od",
+            "legionella_enabled": "Ochrana proti legionele",
+            "legionella_temperature": "Teplota proti legionele",
+            "legionella_interval_days": "Interval ochrany proti legionele",
+            "minimum_before_battery": "Minimum před baterií"
+          },
+          "data_description": {
+            "power_sensor": "Pozná, že termostat bojleru už vypnul, a nabídne výkon dalším.",
+            "max_temperature": "Do této teploty se bojler ohřívá z přebytků (ukládání energie). Nezávislé na teplotě v termínu.",
+            "priority": "Nižší číslo = dostane přebytky dřív.",
+            "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
+            "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
+            "deadline_enabled": "Když voda do daného času nedosáhne teploty, bojler se dohřeje i bez přebytků (v HDO nebo těsně před termínem). Vyžaduje senzor teploty.",
+            "tank_volume_l": "Pro výpočet, kdy začít ohřívat.",
+            "deadline_hysteresis": "Ohřev do termínu začne jen když je voda aspoň o tolik chladnější než cílová teplota.",
+            "deadline_safety_factor": "1,2 = začne o 20 % dřív, než vychází výpočet.",
+            "max_temperature_hysteresis": "Po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu.",
+            "deadline_hdo_only": "Zapnuto: co nedodá slunce podle predikce, se dohřeje ze sítě jen v nízkém tarifu – v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
+            "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
+            "legionella_enabled": "Jednou za interval ohřeje vodu na teplotu proti legionele – přednostně z přebytků (dočasně zvýší maximální teplotu), s nahřátím do termínu i v HDO / před termínem. Termostat bojleru musí tuto teplotu dovolit.",
+            "legionella_interval_days": "Po kolika dnech od posledního dosažení teploty se ohřev zopakuje.",
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+          }
+        },
+        "reconfigure": {
+          "title": "Upravit zařízení",
+          "data": {
+            "name": "Název",
+            "switch_entity": "Spínač",
+            "nominal_power_w": "Příkon",
+            "phases": "Fáze",
+            "power_sensor": "Senzor výkonu (volitelné)",
+            "temperature_sensor": "Teplota vody (volitelné)",
+            "max_temperature": "Maximální teplota z přebytků",
+            "min_on_time_s": "Minimální doba zapnutí",
+            "min_off_time_s": "Minimální doba vypnutí",
+            "priority": "Priorita",
+            "on_delay_s": "Zpoždění zapnutí",
+            "off_delay_s": "Zpoždění vypnutí",
+            "on_margin_w": "Rezerva pro zapnutí",
+            "off_tolerance_w": "Tolerance před vypnutím",
+            "deadline_enabled": "Nahřát do termínu",
+            "deadline_time": "Termín nahřátí",
+            "deadline_temperature": "Teplota v termínu",
+            "tank_volume_l": "Objem nádrže",
+            "deadline_hysteresis": "Hystereze termínu",
+            "deadline_safety_factor": "Rezerva doby ohřevu",
+            "max_temperature_hysteresis": "Hystereze maximální teploty",
+            "deadline_hdo_only": "Dohřívat do termínu jen v HDO",
+            "deadline_earliest": "Dohřev ze sítě nejdříve od",
+            "legionella_enabled": "Ochrana proti legionele",
+            "legionella_temperature": "Teplota proti legionele",
+            "legionella_interval_days": "Interval ochrany proti legionele",
+            "minimum_before_battery": "Minimum před baterií"
+          },
+          "data_description": {
+            "power_sensor": "Pozná, že termostat bojleru už vypnul, a nabídne výkon dalším.",
+            "max_temperature": "Do této teploty se bojler ohřívá z přebytků (ukládání energie). Nezávislé na teplotě v termínu.",
+            "priority": "Nižší číslo = dostane přebytky dřív.",
+            "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
+            "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
+            "deadline_enabled": "Když voda do daného času nedosáhne teploty, bojler se dohřeje i bez přebytků (v HDO nebo těsně před termínem). Vyžaduje senzor teploty.",
+            "tank_volume_l": "Pro výpočet, kdy začít ohřívat.",
+            "deadline_hysteresis": "Ohřev do termínu začne jen když je voda aspoň o tolik chladnější než cílová teplota.",
+            "deadline_safety_factor": "1,2 = začne o 20 % dřív, než vychází výpočet.",
+            "max_temperature_hysteresis": "Po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu.",
+            "deadline_hdo_only": "Zapnuto: co nedodá slunce podle predikce, se dohřeje ze sítě jen v nízkém tarifu – v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
+            "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
+            "legionella_enabled": "Jednou za interval ohřeje vodu na teplotu proti legionele – přednostně z přebytků (dočasně zvýší maximální teplotu), s nahřátím do termínu i v HDO / před termínem. Termostat bojleru musí tuto teplotu dovolit.",
+            "legionella_interval_days": "Po kolika dnech od posledního dosažení teploty se ohřev zopakuje.",
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Zařízení bylo upraveno."
+      },
+      "error": {
+        "max_below_min": "Maximální proud musí být alespoň minimální."
+      }
+    },
+    "ev_charger": {
+      "entry_type": "Nabíječka EV",
+      "initiate_flow": {
+        "user": "Přidat nabíječku EV",
+        "reconfigure": "Upravit zařízení"
+      },
+      "step": {
+        "user": {
+          "title": "Přidat nabíječku EV",
+          "data": {
+            "name": "Název",
+            "charge_switch": "Spínač nabíjení",
+            "current_entity": "Nabíjecí proud",
+            "three_phase_switch": "Přepínač 3 fází (volitelné)",
+            "phases": "Počet fází (bez přepínače)",
+            "power_sensor": "Senzor výkonu (volitelné)",
+            "connected_entity": "Auto připojeno (volitelné)",
+            "min_current": "Minimální proud",
+            "max_current": "Maximální proud",
+            "phase_switch_interval_s": "Minimální interval přepnutí fází",
+            "priority": "Priorita",
+            "on_delay_s": "Zpoždění zapnutí",
+            "off_delay_s": "Zpoždění vypnutí",
+            "on_margin_w": "Rezerva pro zapnutí",
+            "off_tolerance_w": "Tolerance před vypnutím",
+            "ev_soc_sensor": "SoC auta (volitelné)",
+            "ev_deadline_enabled": "Nabít do termínu",
+            "ev_deadline_time": "Termín nabití",
+            "ev_deadline_soc": "Minimální SoC v termínu",
+            "ev_deadline_hdo_only": "Dobíjet do termínu jen v HDO",
+            "ev_capacity_kwh": "Kapacita baterie auta",
+            "ev_charge_efficiency": "Účinnost nabíjení",
+            "ev_deadline_safety_factor": "Rezerva doby nabíjení",
+            "minimum_before_battery": "Minimum před baterií"
+          },
+          "data_description": {
+            "three_phase_switch": "Zapnuto = 3 fáze. Bez něj se používá pevný počet fází.",
+            "phase_switch_interval_s": "Přepnutí fází přeruší nabíjení, proto ne častěji.",
+            "priority": "Nižší číslo = dostane přebytky dřív.",
+            "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
+            "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
+            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne možnost „ráno alespoň X %“.",
+            "ev_deadline_enabled": "Když přebytky nestačí, auto se dobije do termínu na minimální SoC.",
+            "ev_deadline_time": "Např. 07:00 – nejbližší budoucí čas (ráno).",
+            "ev_deadline_hdo_only": "Zapnuto: ze sítě jen v nízkém tarifu, v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
+            "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
+            "ev_charge_efficiency": "0,9 = 10 % ztráty.",
+            "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+          }
+        },
+        "reconfigure": {
+          "title": "Upravit zařízení",
+          "data": {
+            "name": "Název",
+            "charge_switch": "Spínač nabíjení",
+            "current_entity": "Nabíjecí proud",
+            "three_phase_switch": "Přepínač 3 fází (volitelné)",
+            "phases": "Počet fází (bez přepínače)",
+            "power_sensor": "Senzor výkonu (volitelné)",
+            "connected_entity": "Auto připojeno (volitelné)",
+            "min_current": "Minimální proud",
+            "max_current": "Maximální proud",
+            "phase_switch_interval_s": "Minimální interval přepnutí fází",
+            "priority": "Priorita",
+            "on_delay_s": "Zpoždění zapnutí",
+            "off_delay_s": "Zpoždění vypnutí",
+            "on_margin_w": "Rezerva pro zapnutí",
+            "off_tolerance_w": "Tolerance před vypnutím",
+            "ev_soc_sensor": "SoC auta (volitelné)",
+            "ev_deadline_enabled": "Nabít do termínu",
+            "ev_deadline_time": "Termín nabití",
+            "ev_deadline_soc": "Minimální SoC v termínu",
+            "ev_deadline_hdo_only": "Dobíjet do termínu jen v HDO",
+            "ev_capacity_kwh": "Kapacita baterie auta",
+            "ev_charge_efficiency": "Účinnost nabíjení",
+            "ev_deadline_safety_factor": "Rezerva doby nabíjení",
+            "minimum_before_battery": "Minimum před baterií"
+          },
+          "data_description": {
+            "three_phase_switch": "Zapnuto = 3 fáze. Bez něj se používá pevný počet fází.",
+            "phase_switch_interval_s": "Přepnutí fází přeruší nabíjení, proto ne častěji.",
+            "priority": "Nižší číslo = dostane přebytky dřív.",
+            "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
+            "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
+            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne možnost „ráno alespoň X %“.",
+            "ev_deadline_enabled": "Když přebytky nestačí, auto se dobije do termínu na minimální SoC.",
+            "ev_deadline_time": "Např. 07:00 – nejbližší budoucí čas (ráno).",
+            "ev_deadline_hdo_only": "Zapnuto: ze sítě jen v nízkém tarifu, v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
+            "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
+            "ev_charge_efficiency": "0,9 = 10 % ztráty.",
+            "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+          }
+        }
+      },
+      "abort": {
+        "reconfigure_successful": "Zařízení bylo upraveno."
+      },
+      "error": {
+        "max_below_min": "Maximální proud musí být alespoň minimální."
+      }
+    }
+  },
+  "selector": {
+    "phases": {
+      "options": {
+        "1": "1 fáze",
+        "3": "3 fáze"
+      }
+    },
+    "hdo_source": {
+      "options": {
+        "none": "Bez HDO",
+        "egd": "EG.D (PSČ + kód HDO)",
+        "pre": "PRE (povel HDO)",
+        "calendar": "Kalendář (např. integrace ČEZ Distribuce)",
+        "entity": "Entita zap/vyp (přijímač HDO, rozvrh)",
+        "manual": "Ruční časy"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "enabled": {
+        "name": "Optimalizace"
+      },
+      "device_control": {
+        "name": "Řízení"
+      },
+      "device_deadline_enabled": {
+        "name": "Nahřát do termínu"
+      },
+      "export_limit_control": {
+        "name": "Řídit limit přetoku"
+      },
+      "device_deadline_hdo_only": {
+        "name": "Dohřívat do termínu jen v HDO"
+      },
+      "night_target": {
+        "name": "Cíl podle doby bez výroby"
+      },
+      "device_ev_deadline_enabled": {
+        "name": "Nabít do termínu"
+      },
+      "device_ev_deadline_hdo_only": {
+        "name": "Dobíjet do termínu jen v HDO"
+      },
+      "device_legionella_enabled": {
+        "name": "Ochrana proti legionele"
+      },
+      "device_minimum_before_battery": {
+        "name": "Minimum před baterií"
+      },
+      "export_limit_reraise": {
+        "name": "Povolit přetok znovu během dne"
+      },
+      "battery_borrow": {
+        "name": "Dorovnávat z plné baterie"
+      },
+      "dry_run": {
+        "name": "Jen sledovat"
+      }
+    },
+    "sensor": {
+      "budget": {
+        "name": "Přebytek k rozdělení"
+      },
+      "allocated": {
+        "name": "Rozděleno"
+      },
+      "managed": {
+        "name": "Spotřeba řízených zařízení"
+      },
+      "effective_target_soc": {
+        "name": "Cílové SoC baterie"
+      },
+      "breaker_headroom": {
+        "name": "Rezerva jističe"
+      },
+      "status": {
+        "name": "Stav",
+        "state": {
+          "init": "Start",
+          "disabled": "Vypnuto",
+          "missing_input": "Chybí data",
+          "battery_priority": "Přednost baterie",
+          "dispatching": "Rozděluje přebytky",
+          "failsafe": "Pojistka – chybí data"
+        }
+      },
+      "device_allocated": {
+        "name": "Přidělený výkon"
+      },
+      "device_reason": {
+        "name": "Stav řízení",
+        "state": {
+          "init": "Start",
+          "disabled": "Neřízeno",
+          "unavailable": "Nedostupné",
+          "not_connected": "Auto nepřipojeno",
+          "temperature_reached": "Nahřáto",
+          "waiting_for_surplus": "Čeká na přebytek",
+          "starting": "Spouští se",
+          "running": "Běží",
+          "charging": "Nabíjí",
+          "no_surplus": "Málo přebytků",
+          "min_on_time": "Minimální doba zapnutí",
+          "min_off_time": "Minimální doba vypnutí",
+          "deadline_heating": "Nahřívá do termínu",
+          "breaker_limit": "Omezeno jističem",
+          "waiting_for_hdo": "Čeká na HDO",
+          "deadline_charging": "Nabíjí do termínu"
+        }
+      },
+      "last_decision": {
+        "name": "Poslední rozhodnutí"
+      }
+    },
+    "binary_sensor": {
+      "battery_priority": {
+        "name": "Přednost baterie"
+      },
+      "forecast_covers_battery": {
+        "name": "Predikce pokryje baterii"
+      },
+      "export_limit_raised": {
+        "name": "Limit přetoku zvýšen"
+      },
+      "device_active": {
+        "name": "Aktivní"
+      },
+      "hdo": {
+        "name": "HDO (nízký tarif)"
+      }
+    },
+    "number": {
+      "battery_capacity_kwh": {
+        "name": "Kapacita baterie"
+      },
+      "battery_target_soc": {
+        "name": "Maximální cílové SoC"
+      },
+      "forecast_min_soc": {
+        "name": "Cílové SoC při dostatečné predikci"
+      },
+      "forecast_safety_factor": {
+        "name": "Bezpečnostní koeficient predikce"
+      },
+      "house_avg_power_w": {
+        "name": "Průměrný příkon domu přes den"
+      },
+      "export_limit_normal": {
+        "name": "Běžný limit přetoku"
+      },
+      "export_limit_raised": {
+        "name": "Zvýšený limit přetoku"
+      },
+      "main_breaker_a": {
+        "name": "Hlavní jistič"
+      },
+      "breaker_margin_a": {
+        "name": "Rezerva jističe"
+      },
+      "reserve_w": {
+        "name": "Rezerva výkonu"
+      },
+      "nominal_voltage": {
+        "name": "Jmenovité napětí"
+      },
+      "update_interval": {
+        "name": "Interval regulace"
+      },
+      "device_off_tolerance_w": {
+        "name": "Tolerance před vypnutím"
+      },
+      "device_on_margin_w": {
+        "name": "Rezerva pro zapnutí"
+      },
+      "device_on_delay_s": {
+        "name": "Zpoždění zapnutí"
+      },
+      "device_priority": {
+        "name": "Priorita"
+      },
+      "device_phase_switch_interval_s": {
+        "name": "Minimální interval přepnutí fází"
+      },
+      "device_min_off_time_s": {
+        "name": "Minimální doba vypnutí"
+      },
+      "device_min_current": {
+        "name": "Minimální proud"
+      },
+      "device_off_delay_s": {
+        "name": "Zpoždění vypnutí"
+      },
+      "device_min_on_time_s": {
+        "name": "Minimální doba zapnutí"
+      },
+      "device_nominal_power_w": {
+        "name": "Příkon"
+      },
+      "device_max_temperature": {
+        "name": "Maximální teplota z přebytků"
+      },
+      "device_max_current": {
+        "name": "Maximální proud"
+      },
+      "device_deadline_temperature": {
+        "name": "Teplota v termínu"
+      },
+      "device_tank_volume_l": {
+        "name": "Objem nádrže"
+      },
+      "device_deadline_hysteresis": {
+        "name": "Hystereze termínu"
+      },
+      "device_deadline_safety_factor": {
+        "name": "Rezerva doby ohřevu"
+      },
+      "device_max_temperature_hysteresis": {
+        "name": "Hystereze maximální teploty"
+      },
+      "night_power_w": {
+        "name": "Příkon domu bez výroby"
+      },
+      "night_extra_hours": {
+        "name": "Doba bez výroby navíc"
+      },
+      "battery_reserve_soc": {
+        "name": "Rezerva baterie"
+      },
+      "device_ev_deadline_soc": {
+        "name": "Minimální SoC v termínu"
+      },
+      "device_ev_capacity_kwh": {
+        "name": "Kapacita baterie auta"
+      },
+      "device_ev_charge_efficiency": {
+        "name": "Účinnost nabíjení"
+      },
+      "device_ev_deadline_safety_factor": {
+        "name": "Rezerva doby nabíjení"
+      },
+      "device_legionella_temperature": {
+        "name": "Teplota proti legionele"
+      },
+      "device_legionella_interval_days": {
+        "name": "Interval ochrany proti legionele"
+      },
+      "battery_max_charge_w": {
+        "name": "Max. nabíjecí výkon baterie"
+      },
+      "battery_full_soc": {
+        "name": "SoC plné baterie"
+      },
+      "input_timeout_s": {
+        "name": "Časový limit dat"
+      }
+    },
+    "select": {
+      "device_phases": {
+        "name": "Počet fází",
+        "state": {
+          "1": "1 fáze",
+          "3": "3 fáze"
+        }
+      }
+    },
+    "time": {
+      "device_deadline_time": {
+        "name": "Termín nahřátí"
+      },
+      "device_deadline_earliest": {
+        "name": "Dohřev ze sítě nejdříve od"
+      },
+      "device_ev_deadline_time": {
+        "name": "Termín nabití"
+      }
+    }
+  }
+}

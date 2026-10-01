@@ -3,22 +3,30 @@
     "step": {
       "user": {
         "title": "Toky energie",
-        "description": "Senzory ze střídače. Znaménka ověř v Nástrojích pro vývojáře: při odběru ze sítě a při nabíjení baterie.",
+        "description": "Senzory ze střídače. Síť i baterii zadej buď jednou entitou se znaménkem, nebo dvojicí kladných entit (např. Growatt: odběr + dodávka, nabíjení + vybíjení). Výkony ve W i kW.",
         "data": {
-          "grid_power": "Výkon sítě",
+          "grid_power": "Výkon sítě (jedna entita se znaménkem)",
           "grid_import_positive": "Odběr ze sítě je kladný",
-          "battery_power": "Výkon baterie",
+          "battery_power": "Výkon baterie (jedna entita se znaménkem)",
           "battery_charge_positive": "Nabíjení baterie je kladné",
           "battery_soc": "SoC baterie",
           "pv_power": "Výkon FV (volitelné)",
-          "house_power": "Spotřeba domu (volitelné)"
+          "house_power": "Spotřeba domu (volitelné)",
+          "grid_import_power": "Odběr ze sítě",
+          "grid_export_power": "Dodávka do sítě",
+          "battery_charge_power": "Nabíjení baterie",
+          "battery_discharge_power": "Vybíjení baterie"
         },
         "data_description": {
-          "grid_power": "Okamžitý výkon na elektroměru ve W.",
-          "grid_import_positive": "Vypni, pokud tvůj senzor ukazuje odběr záporně.",
-          "battery_power": "Okamžitý výkon baterie ve W.",
-          "battery_charge_positive": "Vypni, pokud senzor ukazuje nabíjení záporně.",
-          "house_power": "Celková spotřeba (např. load power z Growattu). Spotřeba řízených zařízení se odečte automaticky. Použije se místo průměrné spotřeby při výpočtu podle predikce."
+          "grid_power": "Nevyplňuj, pokud zadáš odběr a dodávku zvlášť.",
+          "grid_import_positive": "Jen pro jednu entitu: vypni, pokud ukazuje odběr záporně.",
+          "battery_power": "Nevyplňuj, pokud zadáš nabíjení a vybíjení zvlášť.",
+          "battery_charge_positive": "Jen pro jednu entitu: vypni, pokud ukazuje nabíjení záporně.",
+          "house_power": "Celková spotřeba domu (např. Growatt local load). Řízená zařízení se odečtou automaticky. Bez entity odběru slouží i k jeho dopočtu.",
+          "grid_import_power": "Kladná hodnota při odběru ze sítě. Když chybí, dopočítá se ze spotřeby domu, dodávky, FV a baterie.",
+          "grid_export_power": "Kladná hodnota při přetoku do sítě.",
+          "battery_charge_power": "Kladná hodnota při nabíjení.",
+          "battery_discharge_power": "Kladná hodnota při vybíjení."
         }
       },
       "battery": {
@@ -138,29 +146,39 @@
       "egd_unknown_psc": "EG.D toto PSČ nezná.",
       "cannot_connect": "Nepodařilo se spojit s distributorem, zkus to znovu.",
       "pre_povel_not_found": "Pro tento povel PRE nevrátilo rozvrh.",
-      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00."
+      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00.",
+      "grid_source": "Zadej výkon sítě, nebo odběr i dodávku, nebo dodávku + spotřebu domu + výkon FV (odběr se dopočítá).",
+      "battery_source": "Zadej buď výkon baterie, nebo nabíjení i vybíjení."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Toky energie",
-        "description": "Senzory ze střídače. Znaménka ověř v Nástrojích pro vývojáře: při odběru ze sítě a při nabíjení baterie.",
+        "description": "Senzory ze střídače. Síť i baterii zadej buď jednou entitou se znaménkem, nebo dvojicí kladných entit (např. Growatt: odběr + dodávka, nabíjení + vybíjení). Výkony ve W i kW.",
         "data": {
-          "grid_power": "Výkon sítě",
+          "grid_power": "Výkon sítě (jedna entita se znaménkem)",
           "grid_import_positive": "Odběr ze sítě je kladný",
-          "battery_power": "Výkon baterie",
+          "battery_power": "Výkon baterie (jedna entita se znaménkem)",
           "battery_charge_positive": "Nabíjení baterie je kladné",
           "battery_soc": "SoC baterie",
           "pv_power": "Výkon FV (volitelné)",
-          "house_power": "Spotřeba domu (volitelné)"
+          "house_power": "Spotřeba domu (volitelné)",
+          "grid_import_power": "Odběr ze sítě",
+          "grid_export_power": "Dodávka do sítě",
+          "battery_charge_power": "Nabíjení baterie",
+          "battery_discharge_power": "Vybíjení baterie"
         },
         "data_description": {
-          "grid_power": "Okamžitý výkon na elektroměru ve W.",
-          "grid_import_positive": "Vypni, pokud tvůj senzor ukazuje odběr záporně.",
-          "battery_power": "Okamžitý výkon baterie ve W.",
-          "battery_charge_positive": "Vypni, pokud senzor ukazuje nabíjení záporně.",
-          "house_power": "Celková spotřeba (např. load power z Growattu). Spotřeba řízených zařízení se odečte automaticky. Použije se místo průměrné spotřeby při výpočtu podle predikce."
+          "grid_power": "Nevyplňuj, pokud zadáš odběr a dodávku zvlášť.",
+          "grid_import_positive": "Jen pro jednu entitu: vypni, pokud ukazuje odběr záporně.",
+          "battery_power": "Nevyplňuj, pokud zadáš nabíjení a vybíjení zvlášť.",
+          "battery_charge_positive": "Jen pro jednu entitu: vypni, pokud ukazuje nabíjení záporně.",
+          "house_power": "Celková spotřeba domu (např. Growatt local load). Řízená zařízení se odečtou automaticky. Bez entity odběru slouží i k jeho dopočtu.",
+          "grid_import_power": "Kladná hodnota při odběru ze sítě. Když chybí, dopočítá se ze spotřeby domu, dodávky, FV a baterie.",
+          "grid_export_power": "Kladná hodnota při přetoku do sítě.",
+          "battery_charge_power": "Kladná hodnota při nabíjení.",
+          "battery_discharge_power": "Kladná hodnota při vybíjení."
         }
       },
       "battery": {
@@ -280,7 +298,9 @@
       "egd_unknown_psc": "EG.D toto PSČ nezná.",
       "cannot_connect": "Nepodařilo se spojit s distributorem, zkus to znovu.",
       "pre_povel_not_found": "Pro tento povel PRE nevrátilo rozvrh.",
-      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00."
+      "invalid_times": "Zadej časy jako 00:00-06:00; 14:00-17:00.",
+      "grid_source": "Zadej výkon sítě, nebo odběr i dodávku, nebo dodávku + spotřebu domu + výkon FV (odběr se dopočítá).",
+      "battery_source": "Zadej buď výkon baterie, nebo nabíjení i vybíjení."
     }
   },
   "config_subentries": {

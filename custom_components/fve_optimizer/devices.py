@@ -95,6 +95,19 @@ def state_float(hass: HomeAssistant, entity_id: str | None) -> float | None:
         return None
 
 
+_POWER_FACTORS = {"W": 1.0, "kW": 1000.0, "MW": 1_000_000.0}
+
+
+def state_power(hass: HomeAssistant, entity_id: str | None) -> float | None:
+    """Numeric power state in W (kW / MW sensors are converted)."""
+    value = state_float(hass, entity_id)
+    if value is None or not entity_id:
+        return value
+    state = hass.states.get(entity_id)
+    unit = state.attributes.get("unit_of_measurement") if state else None
+    return value * _POWER_FACTORS.get(unit, 1.0)
+
+
 def state_on(hass: HomeAssistant, entity_id: str | None) -> bool | None:
     """Return True/False for an on/off entity, None when unknown."""
     if not entity_id:
@@ -292,7 +305,7 @@ class SwitchedDevice(ManagedDevice):
 
     def read(self) -> None:
         self._is_on = state_on(self.hass, self.switch_entity)
-        measured = state_float(self.hass, self.config.get(CONF_POWER_SENSOR))
+        measured = state_power(self.hass, self.config.get(CONF_POWER_SENSOR))
         if measured is not None:
             self.status.actual_w = max(measured, 0.0)
         else:
@@ -606,7 +619,7 @@ class EvChargerDevice(ManagedDevice):
                 self._phases_now = 3 if three else 1
         else:
             self._phases_now = int(self.config[CONF_PHASES])
-        measured = state_float(self.hass, self.config.get(CONF_POWER_SENSOR))
+        measured = state_power(self.hass, self.config.get(CONF_POWER_SENSOR))
         if measured is not None:
             self.status.actual_w = max(measured, 0.0)
         elif self._charging and self._current_a is not None:

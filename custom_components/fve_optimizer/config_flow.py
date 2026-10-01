@@ -40,7 +40,11 @@ from .const import (
     CONF_BATTERY_CHARGE_POSITIVE,
     CONF_BATTERY_MAX_CHARGE_W,
     CONF_BATTERY_POWER,
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_DISCHARGE,
     CONF_BATTERY_SOC,
+    CONF_GRID_EXPORT,
+    CONF_GRID_IMPORT,
     CONF_BATTERY_RESERVE_SOC,
     CONF_BATTERY_TARGET_SOC,
     CONF_NIGHT_EXTRA_H,
@@ -171,10 +175,16 @@ def _opt(key: str, values: dict[str, Any]) -> vol.Optional:
 def _sources_schema(v: dict[str, Any]) -> vol.Schema:
     return vol.Schema(
         {
-            _req(CONF_GRID_POWER, v, {}): _entity("sensor"),
+            # Grid: one signed sensor, or import + export (both positive).
+            _opt(CONF_GRID_POWER, v): _entity("sensor"),
             _req(CONF_GRID_IMPORT_POSITIVE, v, DEFAULTS): selector.BooleanSelector(),
-            _req(CONF_BATTERY_POWER, v, {}): _entity("sensor"),
+            _opt(CONF_GRID_IMPORT, v): _entity("sensor"),
+            _opt(CONF_GRID_EXPORT, v): _entity("sensor"),
+            # Battery: one signed sensor, or charge + discharge (both positive).
+            _opt(CONF_BATTERY_POWER, v): _entity("sensor"),
             _req(CONF_BATTERY_CHARGE_POSITIVE, v, DEFAULTS): selector.BooleanSelector(),
+            _opt(CONF_BATTERY_CHARGE, v): _entity("sensor"),
+            _opt(CONF_BATTERY_DISCHARGE, v): _entity("sensor"),
             _req(CONF_BATTERY_SOC, v, {}): _entity("sensor"),
             _opt(CONF_PV_POWER, v): _entity("sensor"),
             _opt(CONF_HOUSE_POWER, v): _entity("sensor"),
@@ -220,6 +230,29 @@ def _control_schema(v: dict[str, Any]) -> vol.Schema:
             _req(CONF_DRY_RUN, v, DEFAULTS): selector.BooleanSelector(),
         }
     )
+
+
+def _validate_sources(data: dict[str, Any]) -> dict[str, str]:
+    """Either one signed sensor or both positive sensors, not both ways."""
+    errors: dict[str, str] = {}
+    for single, plus, minus, err in (
+        (CONF_GRID_POWER, CONF_GRID_IMPORT, CONF_GRID_EXPORT, "grid_source"),
+        (CONF_BATTERY_POWER, CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE, "battery_source"),
+    ):
+        one = bool(data.get(single)) and not data.get(plus) and not data.get(minus)
+        pair = not data.get(single) and bool(data.get(plus)) and bool(data.get(minus))
+        # Grid import may be computed from house load + export + PV.
+        computed = (
+            single == CONF_GRID_POWER
+            and not data.get(single)
+            and not data.get(plus)
+            and bool(data.get(minus))
+            and bool(data.get(CONF_HOUSE_POWER))
+            and bool(data.get(CONF_PV_POWER))
+        )
+        if not (one or pair or computed):
+            errors[single] = err
+    return errors
 
 
 def _validate_control(hass, data: dict[str, Any]) -> dict[str, str]:
@@ -414,10 +447,15 @@ class FveOptimizerConfigFlow(_HdoSteps, ConfigFlow, domain=DOMAIN):
         self._data: dict[str, Any] = {}
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_battery()
-        return self.async_show_form(step_id="user", data_schema=_sources_schema(self._data))
+            errors = _validate_sources(user_input)
+            if not errors:
+                self._data.update(user_input)
+                return await self.async_step_battery()
+        return self.async_show_form(
+            step_id="user", data_schema=_sources_schema({**self._data, **(user_input or {})}), errors=errors
+        )
 
     async def async_step_battery(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:
@@ -475,6 +513,12 @@ class FveOptimizerOptionsFlow(_HdoSteps, OptionsFlow):
         # Optional fields left empty must drop out of the merged config.
         merged = {**self.config_entry.data, **self.config_entry.options}
         for key in (
+            CONF_GRID_POWER,
+            CONF_GRID_IMPORT,
+            CONF_GRID_EXPORT,
+            CONF_BATTERY_POWER,
+            CONF_BATTERY_CHARGE,
+            CONF_BATTERY_DISCHARGE,
             CONF_PV_POWER,
             CONF_HOUSE_POWER,
             CONF_FORECAST_REMAINING,
@@ -487,10 +531,14 @@ class FveOptimizerOptionsFlow(_HdoSteps, OptionsFlow):
         return self.async_create_entry(data={**merged, **self._data})
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
         if user_input is not None:
-            self._data.update(user_input)
-            return await self.async_step_battery()
-        return self.async_show_form(step_id="init", data_schema=_sources_schema(self._current()))
+            errors = _validate_sources(user_input)
+            if not errors:
+                self._data.update(user_input)
+                return await self.async_step_battery()
+        values = {**self._current(), **(user_input or {})}
+        return self.async_show_form(step_id="init", data_schema=_sources_schema(values), errors=errors)
 
     async def async_step_battery(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         if user_input is not None:

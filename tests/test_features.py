@@ -539,3 +539,72 @@ async def test_card_is_served(hass: HomeAssistant, hass_client) -> None:
     assert "customElements.define" in await resp.text()
     status = [s for s in hass.states.async_all("sensor") if s.attributes.get("data", {}).get("devices") is not None]
     assert status, "status sensor exposes live data for the card"
+
+
+async def test_separate_positive_sensors_and_kw(hass: HomeAssistant) -> None:
+    """Growatt style: import/export and charge/discharge as positive sensors, some in kW."""
+    rec = Recorder(hass)
+    config = {**_entry({"night_target": False}).data}
+    config.pop("grid_power"); config.pop("battery_power")
+    config.update(grid_import_power="sensor.imp", grid_export_power="sensor.exp",
+                  battery_charge_power="sensor.chg", battery_discharge_power="sensor.dis")
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from homeassistant.config_entries import ConfigSubentryData
+    from custom_components.fve_optimizer.const import DOMAIN
+    entry = MockConfigEntry(domain=DOMAIN, title="FVE Optimizer", data=config, subentries_data=[
+        ConfigSubentryData(data=BOILER, subentry_type="switched", title="Bojler", unique_id=None)])
+    _states(hass, grid=0, batt=0, soc=95, limit="10000", switch__boiler="off")
+    hass.states.async_set("sensor.imp", "0", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.exp", "3.1", {"unit_of_measurement": "kW"})  # 3100 W export
+    hass.states.async_set("sensor.chg", "0", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.dis", "0", {"unit_of_measurement": "W"})
+    coordinator = await _setup(hass, entry)
+    assert coordinator.data.grid_w == -3100
+    assert coordinator.data.battery_w == 0
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+
+    hass.states.async_set("sensor.dis", "800", {"unit_of_measurement": "W"})
+    hass.states.async_set("sensor.exp", "0", {"unit_of_measurement": "kW"})
+    await coordinator.async_refresh()
+    assert coordinator.data.battery_w == -800
+
+
+async def test_sources_step_requires_one_way(hass: HomeAssistant) -> None:
+    from custom_components.fve_optimizer.const import DOMAIN
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"grid_import_power": "sensor.imp", "battery_power": "sensor.batt", "battery_soc": "sensor.soc"},
+    )
+    assert result["errors"] == {"grid_power": "grid_source"}
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {"grid_import_power": "sensor.imp", "grid_export_power": "sensor.exp",
+         "battery_charge_power": "sensor.chg", "battery_discharge_power": "sensor.dis",
+         "battery_soc": "sensor.soc"},
+    )
+    assert result["step_id"] == "battery"
+
+
+async def test_grid_import_computed_from_house_load(hass: HomeAssistant) -> None:
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from custom_components.fve_optimizer.const import DOMAIN
+    Recorder(hass)
+    config = {**_entry({"night_target": False}).data}
+    config.pop("grid_power"); config.pop("battery_power")
+    config.update(grid_export_power="sensor.exp", house_power="sensor.house", pv_power="sensor.pv",
+                  battery_charge_power="sensor.chg", battery_discharge_power="sensor.dis")
+    entry = MockConfigEntry(domain=DOMAIN, title="FVE Optimizer", data=config)
+    _states(hass, grid=0, batt=0, soc=60)
+    # Evening: house 1500 W, PV 300 W, battery discharging 900 W → 300 W from the grid.
+    for e, v in (("sensor.exp", "0"), ("sensor.house", "1500"), ("sensor.pv", "300"),
+                 ("sensor.chg", "0"), ("sensor.dis", "900")):
+        hass.states.async_set(e, v, {"unit_of_measurement": "W"})
+    coordinator = await _setup(hass, entry)
+    assert coordinator.data.grid_w == 300
+    # Noon: PV 6 kW, house 1 kW, charging 3 kW, export 2 kW → no import.
+    for e, v in (("sensor.exp", "2000"), ("sensor.house", "1000"), ("sensor.pv", "6000"),
+                 ("sensor.chg", "3000"), ("sensor.dis", "0")):
+        hass.states.async_set(e, v, {"unit_of_measurement": "W"})
+    await coordinator.async_refresh()
+    assert coordinator.data.grid_w == -2000

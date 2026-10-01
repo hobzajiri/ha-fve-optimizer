@@ -20,7 +20,11 @@ from .const import (
     CONF_BATTERY_CHARGE_POSITIVE,
     CONF_BATTERY_MAX_CHARGE_W,
     CONF_BATTERY_POWER,
+    CONF_BATTERY_CHARGE,
+    CONF_BATTERY_DISCHARGE,
     CONF_BATTERY_SOC,
+    CONF_GRID_EXPORT,
+    CONF_GRID_IMPORT,
     CONF_BATTERY_RESERVE_SOC,
     CONF_BATTERY_TARGET_SOC,
     CONF_NIGHT_EXTRA_H,
@@ -63,6 +67,7 @@ from .devices import (
     ManagedDevice,
     async_set_number,
     state_float,
+    state_power,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,7 +202,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
         missing, frozen = [], []
         now = dt_util.utcnow()
-        for key in (CONF_GRID_POWER, CONF_BATTERY_POWER, CONF_BATTERY_SOC):
+        for key in self._critical_inputs():
             entity_id = self.conf.get(key)
             state = self.hass.states.get(entity_id) if entity_id else None
             if state is None or state_float(self.hass, entity_id) is None:
@@ -208,19 +213,68 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 frozen.append(str(entity_id))
         return missing, frozen
 
+    def _power(self, key: str) -> float | None:
+        return state_power(self.hass, self.conf.get(key))
+
+    def _signed(self, single: str, positive: str, plus: str, minus: str) -> float | None:
+        """One signed sensor, or two positive ones (plus − minus)."""
+        if self.conf.get(single):
+            value = self._power(single)
+            if value is None:
+                return None
+            return value if self.conf[positive] else -value
+        a, b = self._power(plus), self._power(minus)
+        if a is None or b is None:
+            return None
+        return abs(a) - abs(b)
+
+    def _grid_computed(self) -> bool:
+        """No import sensor: derive it from the house load (Growatt "local load")."""
+        c = self.conf
+        return (
+            not c.get(CONF_GRID_POWER)
+            and not c.get(CONF_GRID_IMPORT)
+            and bool(c.get(CONF_GRID_EXPORT))
+            and bool(c.get(CONF_HOUSE_POWER))
+            and bool(c.get(CONF_PV_POWER))
+        )
+
     def _grid_import_w(self) -> float | None:
         """Grid power, positive = import from grid."""
-        value = self._read(CONF_GRID_POWER)
-        if value is None:
-            return None
-        return value if self.conf[CONF_GRID_IMPORT_POSITIVE] else -value
+        if self._grid_computed():
+            # PV + import + discharge = house + export + charge
+            house, export, pv = (
+                self._power(CONF_HOUSE_POWER),
+                self._power(CONF_GRID_EXPORT),
+                self._power(CONF_PV_POWER),
+            )
+            battery = self._battery_charge_w()
+            if None in (house, export, pv, battery):
+                return None
+            imported = max(abs(house) + abs(export) + battery - abs(pv), 0.0)  # type: ignore[arg-type]
+            return imported - abs(export)  # type: ignore[arg-type]
+        return self._signed(CONF_GRID_POWER, CONF_GRID_IMPORT_POSITIVE, CONF_GRID_IMPORT, CONF_GRID_EXPORT)
 
     def _battery_charge_w(self) -> float | None:
         """Battery power, positive = charging."""
-        value = self._read(CONF_BATTERY_POWER)
-        if value is None:
-            return None
-        return value if self.conf[CONF_BATTERY_CHARGE_POSITIVE] else -value
+        return self._signed(
+            CONF_BATTERY_POWER, CONF_BATTERY_CHARGE_POSITIVE, CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE
+        )
+
+    def _critical_inputs(self) -> list[str]:
+        keys = [CONF_BATTERY_SOC]
+        if self.conf.get(CONF_GRID_POWER):
+            keys.append(CONF_GRID_POWER)
+        elif self._grid_computed():
+            keys += [CONF_GRID_EXPORT, CONF_HOUSE_POWER, CONF_PV_POWER]
+        else:
+            keys += [CONF_GRID_IMPORT, CONF_GRID_EXPORT]
+        keys += (
+            [CONF_BATTERY_POWER]
+            if self.conf.get(CONF_BATTERY_POWER)
+            else [CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE]
+        )
+        return keys
 
     def _hours_until_sunset(self) -> float:
         sun = self.hass.states.get("sun.sun")
@@ -347,8 +401,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         battery = self._battery_charge_w()
         soc = self._read(CONF_BATTERY_SOC)
         snap.grid_w, snap.battery_w, snap.battery_soc = grid, battery, soc
-        snap.pv_w = self._read(CONF_PV_POWER)
-        snap.house_w = self._read(CONF_HOUSE_POWER)
+        snap.pv_w = self._power(CONF_PV_POWER)
+        snap.house_w = self._power(CONF_HOUSE_POWER)
 
         active = [d for d in self.devices.values() if d.enabled]
         snap.managed_w = sum(d.status.actual_w for d in active)

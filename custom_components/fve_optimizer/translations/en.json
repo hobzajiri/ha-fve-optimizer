@@ -3,22 +3,30 @@
     "step": {
       "user": {
         "title": "Energy flows",
-        "description": "Inverter sensors. Check the signs in Developer tools while importing from the grid and while charging the battery.",
+        "description": "Inverter sensors. Enter grid and battery either as one signed entity or as a pair of positive entities (e.g. Growatt: import + export, charge + discharge). Power in W or kW.",
         "data": {
-          "grid_power": "Grid power",
+          "grid_power": "Grid power (one signed entity)",
           "grid_import_positive": "Grid import is positive",
-          "battery_power": "Battery power",
+          "battery_power": "Battery power (one signed entity)",
           "battery_charge_positive": "Battery charging is positive",
           "battery_soc": "Battery SoC",
           "pv_power": "PV power (optional)",
-          "house_power": "House consumption (optional)"
+          "house_power": "House consumption (optional)",
+          "grid_import_power": "Grid import",
+          "grid_export_power": "Grid export",
+          "battery_charge_power": "Battery charging",
+          "battery_discharge_power": "Battery discharging"
         },
         "data_description": {
-          "grid_power": "Instantaneous power at the meter in W.",
-          "grid_import_positive": "Turn off if your sensor reports import as negative.",
-          "battery_power": "Instantaneous battery power in W.",
-          "battery_charge_positive": "Turn off if the sensor reports charging as negative.",
-          "house_power": "Total consumption (e.g. Growatt load power). Managed devices are subtracted automatically. Used instead of the average consumption for the forecast check."
+          "grid_power": "Leave empty when import and export are entered separately.",
+          "grid_import_positive": "Single entity only: turn off if it reports import as negative.",
+          "battery_power": "Leave empty when charge and discharge are entered separately.",
+          "battery_charge_positive": "Single entity only: turn off if it reports charging as negative.",
+          "house_power": "Total house consumption (e.g. Growatt local load). Managed devices are subtracted automatically. Without an import entity it is also used to compute the import.",
+          "grid_import_power": "Positive while importing. When missing it is computed from house load, export, PV and battery.",
+          "grid_export_power": "Positive while exporting.",
+          "battery_charge_power": "Positive while charging.",
+          "battery_discharge_power": "Positive while discharging."
         }
       },
       "battery": {
@@ -138,29 +146,39 @@
       "egd_unknown_psc": "EG.D does not know this PSČ.",
       "cannot_connect": "Could not reach the distributor, try again.",
       "pre_povel_not_found": "PRE returned no schedule for this command.",
-      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00."
+      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00.",
+      "grid_source": "Enter grid power, or import and export, or export + house load + PV power (import is computed).",
+      "battery_source": "Enter either battery power, or both charge and discharge."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Energy flows",
-        "description": "Inverter sensors. Check the signs in Developer tools while importing from the grid and while charging the battery.",
+        "description": "Inverter sensors. Enter grid and battery either as one signed entity or as a pair of positive entities (e.g. Growatt: import + export, charge + discharge). Power in W or kW.",
         "data": {
-          "grid_power": "Grid power",
+          "grid_power": "Grid power (one signed entity)",
           "grid_import_positive": "Grid import is positive",
-          "battery_power": "Battery power",
+          "battery_power": "Battery power (one signed entity)",
           "battery_charge_positive": "Battery charging is positive",
           "battery_soc": "Battery SoC",
           "pv_power": "PV power (optional)",
-          "house_power": "House consumption (optional)"
+          "house_power": "House consumption (optional)",
+          "grid_import_power": "Grid import",
+          "grid_export_power": "Grid export",
+          "battery_charge_power": "Battery charging",
+          "battery_discharge_power": "Battery discharging"
         },
         "data_description": {
-          "grid_power": "Instantaneous power at the meter in W.",
-          "grid_import_positive": "Turn off if your sensor reports import as negative.",
-          "battery_power": "Instantaneous battery power in W.",
-          "battery_charge_positive": "Turn off if the sensor reports charging as negative.",
-          "house_power": "Total consumption (e.g. Growatt load power). Managed devices are subtracted automatically. Used instead of the average consumption for the forecast check."
+          "grid_power": "Leave empty when import and export are entered separately.",
+          "grid_import_positive": "Single entity only: turn off if it reports import as negative.",
+          "battery_power": "Leave empty when charge and discharge are entered separately.",
+          "battery_charge_positive": "Single entity only: turn off if it reports charging as negative.",
+          "house_power": "Total house consumption (e.g. Growatt local load). Managed devices are subtracted automatically. Without an import entity it is also used to compute the import.",
+          "grid_import_power": "Positive while importing. When missing it is computed from house load, export, PV and battery.",
+          "grid_export_power": "Positive while exporting.",
+          "battery_charge_power": "Positive while charging.",
+          "battery_discharge_power": "Positive while discharging."
         }
       },
       "battery": {
@@ -280,7 +298,9 @@
       "egd_unknown_psc": "EG.D does not know this PSČ.",
       "cannot_connect": "Could not reach the distributor, try again.",
       "pre_povel_not_found": "PRE returned no schedule for this command.",
-      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00."
+      "invalid_times": "Enter times like 00:00-06:00; 14:00-17:00.",
+      "grid_source": "Enter grid power, or import and export, or export + house load + PV power (import is computed).",
+      "battery_source": "Enter either battery power, or both charge and discharge."
     }
   },
   "config_subentries": {

@@ -17,6 +17,11 @@ CONF_GRID_IMPORT_POSITIVE: Final = "grid_import_positive"
 CONF_BATTERY_POWER: Final = "battery_power"
 CONF_BATTERY_CHARGE_POSITIVE: Final = "battery_charge_positive"
 CONF_BATTERY_SOC: Final = "battery_soc"
+# Alternative to one signed sensor: two positive sensors (e.g. Growatt)
+CONF_GRID_IMPORT: Final = "grid_import_power"
+CONF_GRID_EXPORT: Final = "grid_export_power"
+CONF_BATTERY_CHARGE: Final = "battery_charge_power"
+CONF_BATTERY_DISCHARGE: Final = "battery_discharge_power"
 CONF_PV_POWER: Final = "pv_power"
 CONF_HOUSE_POWER: Final = "house_power"
 

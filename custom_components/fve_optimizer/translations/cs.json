@@ -634,6 +634,9 @@
       },
       "last_decision": {
         "name": "Poslední rozhodnutí"
+      },
+      "recommendations": {
+        "name": "Doporučení"
       }
     },
     "binary_sensor": {
@@ -796,6 +799,18 @@
       },
       "device_ev_deadline_time": {
         "name": "Termín nabití"
+      }
+    }
+  },
+  "services": {
+    "execute_recommendation": {
+      "name": "Provést doporučení",
+      "description": "V režimu Jen sledovat provede doporučené přepnutí ručně – jedno podle ID, nebo všechna.",
+      "fields": {
+        "id": {
+          "name": "ID doporučení",
+          "description": "ID z atributu items entity Doporučení (prázdné = všechna)."
+        }
       }
     }
   }

@@ -17,6 +17,9 @@ const T = {
     urgent: "termín", minFirst: "před baterií", atRisk: "nestihne", plan: "plán",
     batteryFirst: "Přednost baterie", devicesFirst: "Přednost zařízení",
     dryRun: "Jen sledování – nic se nespíná", failsafe: "Pojistka – chybí data ze střídače",
+    recs: "Doporučení", doIt: "Provést", doAll: "Provést vše", since: "od",
+    device: "Zařízení", wanted: "Doporučeno", now: "Teď", on: "Zap", off: "Vyp",
+    charge: "Nabíjet", noCharge: "Nenabíjet", exportLimit: "Limit přetoku", manual: "proveď ručně",
   },
   en: {
     pv: "PV", grid: "Grid", battery: "Battery", house: "House",
@@ -27,6 +30,9 @@ const T = {
     urgent: "deadline", minFirst: "before battery", atRisk: "at risk", plan: "plan",
     batteryFirst: "Battery first", devicesFirst: "Devices first",
     dryRun: "Watch only – nothing is switched", failsafe: "Fail-safe – no inverter data",
+    recs: "Recommendations", doIt: "Do it", doAll: "Do all", since: "since",
+    device: "Device", wanted: "Recommended", now: "Now", on: "On", off: "Off",
+    charge: "Charge", noCharge: "Don't charge", exportLimit: "Export limit", manual: "do by hand",
   },
 };
 
@@ -192,6 +198,45 @@ class FveOptimizerCard extends HTMLElement {
         </div>`;
     }).join("");
 
+    const recs = d.recommendations || [];
+    const recById = Object.fromEntries(recs.map((r) => [r.id, r]));
+    const hhmm = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+    const evText = (on, w, a, p) => (on ? `${w != null ? fmtW(w) + " · " : ""}${a ?? "?"} A · ${p ?? "?"}f` : t.noCharge);
+    const tableRows = devices.map((x) => {
+      const now = x.now || {};
+      let wanted, actual;
+      if (x.kind === "ev_charger") {
+        wanted = x.active ? `${t.charge} ${evText(true, x.allocated_w, x.current, x.phases)}` : t.noCharge;
+        actual = now.on ? evText(true, x.actual_w, now.current != null ? Math.round(now.current) : null, now.phases) : t.noCharge;
+      } else {
+        wanted = x.active ? t.on : t.off;
+        actual = now.on == null ? "?" : now.on ? `${t.on}${x.actual_w ? " · " + fmtW(x.actual_w) : ""}` : t.off;
+      }
+      return { id: x.id, name: x.name, wanted, actual, diff: !!x.pending, rec: recById[x.id] };
+    });
+    if (d.export_limit_target != null) {
+      const u = d.export_limit_unit ? ` ${d.export_limit_unit}` : "";
+      const diff = d.export_limit_now == null || Math.abs(d.export_limit_now - d.export_limit_target) >= 0.5;
+      tableRows.push({ id: "export_limit", name: t.exportLimit, wanted: `${d.export_limit_target}${u}`,
+        actual: d.export_limit_now == null ? "?" : `${d.export_limit_now}${u}`, diff, rec: recById.export_limit });
+    }
+    const pendingRecs = tableRows.filter((r) => r.rec);
+    const recBlock = !tableRows.length ? "" : `
+      <div class="recs">
+        <div class="recs-head">${t.recs}${d.dry_run ? ` · ${t.manual}` : ""}
+          ${d.dry_run && pendingRecs.length > 1 ? `<button class="btn all" data-id="">${t.doAll}</button>` : ""}</div>
+        <table class="rtab">
+          <thead><tr><th>${t.device}</th><th>${t.wanted}</th><th>${t.now}</th><th></th></tr></thead>
+          <tbody>${tableRows.map((r) => `
+            <tr class="${r.diff ? "diff" : ""}">
+              <td>${r.name}</td><td class="w">${r.wanted}</td><td class="n">${r.actual}</td>
+              <td class="act">${r.diff
+                ? (d.dry_run && r.rec ? `<button class="btn" data-id="${r.id}" title="${t.since} ${hhmm(r.rec.since)}">${t.doIt}</button>` : "…")
+                : "✔"}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
     const time = d.changed_at ? new Date(d.changed_at).toLocaleTimeString() : "";
     root.innerHTML = `
       <ha-card>
@@ -199,9 +244,17 @@ class FveOptimizerCard extends HTMLElement {
         <div class="headline">${d.headline || ""}</div>
         ${svg}
         <div class="chips">${chips}</div>
+        ${recBlock}
         <div class="rows">${rows}</div>
         <div class="foot">${time}</div>
       </ha-card>${STYLE}`;
+    root.querySelectorAll("button.btn").forEach((b) =>
+      b.addEventListener("click", (ev) => {
+        const id = ev.currentTarget.dataset.id;
+        ev.currentTarget.disabled = true;
+        this._hass.callService("fve_optimizer", "execute_recommendation", id ? { id } : {});
+      })
+    );
   }
 }
 
@@ -242,6 +295,22 @@ const STYLE = `<style>
   .tag { font-size: 11px; padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
   .tag.urg { background: rgba(219,68,55,.15); color: var(--error-color, #db4437); }
   .tag.min { background: rgba(3,155,229,.15); color: var(--info-color, #039be5); }
+  .recs { border: 1px solid var(--divider-color, #ddd); border-radius: 10px; padding: 8px 10px; margin: 0 0 10px; }
+  .recs-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px;
+    color: var(--info-color, #039be5); margin-bottom: 4px; }
+  .rtab { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .rtab th { text-align: left; font-weight: 400; font-size: 11px; color: var(--secondary-text-color); padding: 2px 4px; }
+  .rtab td { padding: 5px 4px; border-top: 1px solid var(--divider-color, #ddd); vertical-align: middle; }
+  .rtab td.w { font-weight: 500; }
+  .rtab td.n { color: var(--secondary-text-color); }
+  .rtab td.act { text-align: right; white-space: nowrap; color: var(--success-color, #43a047); }
+  .rtab tr.diff td.w { color: var(--warning-color, #ff9800); }
+  .rtab tr.diff td.act { color: var(--secondary-text-color); }
+  .btn { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 12px; border: none; cursor: pointer;
+    background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
+  .btn.all { background: transparent; color: var(--primary-color, #03a9f4); border: 1px solid var(--primary-color, #03a9f4); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .none { font-size: 12px; color: var(--secondary-text-color); }
   .foot { text-align: right; font-size: 11px; color: var(--secondary-text-color); margin-top: 6px; }
 </style>`;
 

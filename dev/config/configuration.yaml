@@ -22,7 +22,7 @@ lovelace:
   dashboards:
     fve-dev:
       mode: yaml
-      title: FVE Optimizer
-      icon: mdi:solar-power
+      title: Simulátor
+      icon: mdi:flask-outline
       show_in_sidebar: true
       filename: dashboards/fve.yaml

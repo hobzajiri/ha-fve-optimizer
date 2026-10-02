@@ -99,7 +99,8 @@ def parse_ranges(text: str) -> list[tuple[time, time | None]]:
     ranges: list[tuple[time, time | None]] = []
     for h1, m1, h2, m2 in _RANGE_RE.findall(text or ""):
         start = time(int(h1) % 24, int(m1))
-        end = None if int(h2) >= 24 else time(int(h2), int(m2))
+        # "24:00" and EG.D's "23:59" both mean the end of the day.
+        end = None if int(h2) >= 24 or (int(h2), int(m2)) == (23, 59) else time(int(h2), int(m2))
         ranges.append((start, end))
     return ranges
 

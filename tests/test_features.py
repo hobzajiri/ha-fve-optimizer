@@ -406,6 +406,8 @@ async def test_export_limit_once_a_day(hass: HomeAssistant, freezer) -> None:
 
     # Next morning it is allowed again.
     freezer.move_to(datetime(2026, 10, 1, 7, 30, tzinfo=PRAGUE))
+    _sun(hass, "above_horizon", datetime(2026, 10, 1, 18, 48, tzinfo=PRAGUE),
+         datetime(2026, 10, 2, 7, 2, tzinfo=PRAGUE))
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert limit_writes()[-1] == ("set_value", "input_number.export_limit", 10000.0)
@@ -608,3 +610,28 @@ async def test_grid_import_computed_from_house_load(hass: HomeAssistant) -> None
         hass.states.async_set(e, v, {"unit_of_measurement": "W"})
     await coordinator.async_refresh()
     assert coordinator.data.grid_w == -2000
+
+
+async def test_stale_sun_entity_is_recomputed(hass: HomeAssistant, freezer) -> None:
+    """Host slept through sunrise: sun.sun still says below_horizon with past times."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    hass.config.latitude, hass.config.longitude = 49.8, 15.5
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 2, 8, 10, tzinfo=PRAGUE))
+    _sun(hass, "below_horizon", datetime(2026, 10, 1, 18, 36, tzinfo=PRAGUE),
+         datetime(2026, 10, 2, 6, 59, tzinfo=PRAGUE))
+    _states(hass, grid=0, batt=0, soc=60, sensor__forecast="20")
+    coordinator = await _setup(hass, _entry({"forecast_remaining_today": "sensor.forecast"}))
+    # Recomputed: sunset ≈ 18:34 → ~10.4 h, not 0.
+    assert 10.0 < coordinator.data.hours_until_sunset < 10.8
+
+
+def test_egd_2359_merges_over_midnight() -> None:
+    from custom_components.fve_optimizer import hdo
+    from datetime import date
+    windows = hdo.merge_windows(
+        hdo._windows_for_day(date(2026, 10, 2), hdo.parse_ranges("21:00-23:59"), PRAGUE)
+        + hdo._windows_for_day(date(2026, 10, 3), hdo.parse_ranges("00:00-09:00"), PRAGUE)
+    )
+    assert len(windows) == 1
+    assert windows[0][0].hour == 21 and windows[0][1].hour == 9

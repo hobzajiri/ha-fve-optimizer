@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 import math
 import time
@@ -11,7 +11,9 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
 from homeassistant.helpers.storage import Store
+from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -100,6 +102,8 @@ class DispatchSnapshot:
     borrow_active: bool = False
     dry_run: bool = False
     stale_inputs: list[str] = field(default_factory=list)
+    # Watch-only: manual actions that would bring reality in line with the plan.
+    recommendations: list[dict[str, Any]] = field(default_factory=list)
     hdo_active: bool | None = None
     reason: str = "init"
     devices: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -137,6 +141,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._export_raised: bool | None = None
         self._borrow_active = False
         self._inputs_bad_since: float | None = None
+        self._recommended_since: dict[str, str] = {}
         self._failsafe_logged = False
         # Days the limit was raised / lowered – at most one raise per day.
         self._export_raised_day: str | None = None
@@ -195,12 +200,15 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
     def _input_problems(self) -> tuple[list[str], list[str]]:
         """(missing, frozen) critical inputs.
 
-        Missing = unavailable / unknown. Frozen = not reported for longer than
-        the timeout. ``last_reported`` moves on every write, even with an
-        unchanged value, so a polled but steady sensor is fine.
+        Missing = unavailable / unknown, checked per entity. Frozen = *all*
+        inputs silent for longer than the timeout: they come from the same
+        inverter, and some integrations write a state only when it changes
+        (battery discharge stays 0 W for hours), so one quiet entity alone
+        says nothing.
         """
         timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
-        missing, frozen = [], []
+        missing: list[str] = []
+        present: list[tuple[str, Any]] = []
         now = dt_util.utcnow()
         for key in self._critical_inputs():
             entity_id = self.conf.get(key)
@@ -208,9 +216,10 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             if state is None or state_float(self.hass, entity_id) is None:
                 missing.append(str(entity_id))
                 continue
-            seen = getattr(state, "last_reported", None) or state.last_updated
-            if timeout and (now - seen).total_seconds() > timeout:
-                frozen.append(str(entity_id))
+            present.append((str(entity_id), getattr(state, "last_reported", None) or state.last_updated))
+        frozen: list[str] = []
+        if timeout and present and all((now - seen).total_seconds() > timeout for _, seen in present):
+            frozen = [entity_id for entity_id, _ in present]
         return missing, frozen
 
     def _power(self, key: str) -> float | None:
@@ -276,28 +285,42 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         )
         return keys
 
-    def _hours_until_sunset(self) -> float:
-        sun = self.hass.states.get("sun.sun")
-        if sun is None or sun.state != "above_horizon":
-            return 0.0
-        setting = dt_util.parse_datetime(str(sun.attributes.get("next_setting", "")))
-        if setting is None:
-            return 0.0
-        return max((setting - dt_util.utcnow()).total_seconds() / 3600, 0.0)
+    def _sun(self) -> tuple[bool, datetime | None, datetime | None] | None:
+        """(sun up, next rising, next setting), None without the sun entity.
 
-    def _hours_without_production(self) -> float | None:
-        """Hours from sunset (or now, at night) to the next sunrise."""
+        The sun entity's attributes can be stale (e.g. after the host slept
+        through a sunrise), so past values are recomputed from the location.
+        """
         sun = self.hass.states.get("sun.sun")
         if sun is None:
             return None
+        now = dt_util.utcnow()
         rising = dt_util.parse_datetime(str(sun.attributes.get("next_rising", "")))
         setting = dt_util.parse_datetime(str(sun.attributes.get("next_setting", "")))
-        if rising is None:
+        if rising and setting and rising > now and setting > now:
+            return sun.state == "above_horizon", rising, setting
+        rising = get_astral_event_next(self.hass, SUN_EVENT_SUNRISE, now)
+        setting = get_astral_event_next(self.hass, SUN_EVENT_SUNSET, now)
+        return setting < rising, rising, setting
+
+    def _producing(self) -> bool:
+        """Daylight (assumed when the sun entity is missing)."""
+        sun = self._sun()
+        return sun is None or sun[0]
+
+    def _hours_until_sunset(self) -> float:
+        sun = self._sun()
+        if sun is None or not sun[0] or sun[2] is None:
+            return 0.0
+        return max((sun[2] - dt_util.utcnow()).total_seconds() / 3600, 0.0)
+
+    def _hours_without_production(self) -> float | None:
+        """Hours from sunset (or now, at night) to the next sunrise."""
+        sun = self._sun()
+        if sun is None or sun[1] is None:
             return None
-        if sun.state == "above_horizon" and setting is not None:
-            start = setting
-        else:
-            start = dt_util.utcnow()
+        up, rising, setting = sun
+        start = setting if up and setting is not None else dt_util.utcnow()
         return max((rising - start).total_seconds() / 3600, 0.0)
 
     def _night_target(self, snap: DispatchSnapshot) -> float:
@@ -491,6 +514,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
 
     def _finish(self, snap: DispatchSnapshot) -> DispatchSnapshot:
         snap.export_limit_raised = bool(self._export_raised)
+        snap.recommendations = self._recommendations()
         self._save_state()
         self._log_decision(snap)
         devices = sorted(self.devices.values(), key=lambda d: (not d.status.urgent, d.priority))
@@ -597,13 +621,26 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "forecast_need_kwh": snap.forecast_need_kwh,
             "forecast_covers": snap.forecast_covers_battery,
             "export_raised": bool(self._export_raised),
+            "export_limit_now": state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY))
+            if self._export_controlled()
+            else None,
+            "export_limit_target": (
+                self._f(CONF_EXPORT_LIMIT_RAISED if self._export_raised else CONF_EXPORT_LIMIT_NORMAL)
+                if self._export_controlled() and self._export_raised is not None
+                else None
+            ),
+            "export_limit_unit": self._export_unit(),
             "hdo": snap.hdo_active,
             "borrow": snap.borrow_active,
             "dry_run": snap.dry_run,
+            "recommendations": snap.recommendations,
             "stale_inputs": snap.stale_inputs,
             "headroom_a": None if snap.headroom_a is None else round(snap.headroom_a, 1),
             "devices": [
                 {
+                    "id": d.subentry_id,
+                    "now": d.state_now(),
+                    "pending": bool(d.pending_actions()) if d.enabled else False,
                     "name": d.name,
                     "kind": d.kind,
                     "priority": d.priority,
@@ -681,8 +718,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         today = dt_util.now().date().isoformat()
         devices_want = any(d.status.wants_power and not d.status.urgent for d in active)
         can_store = devices_want or soc < self._f(CONF_BATTERY_FULL_SOC)
-        sun = self.hass.states.get("sun.sun")
-        producing = sun is None or sun.state == "above_horizon"
+        producing = self._producing()
 
         if self._export_raised:
             # Without production nothing flows out, so the evening needs no
@@ -700,6 +736,83 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             return
         await self._set_export_raised(True)
         self._export_raised_day = today
+
+    def _recommendations(self) -> list[dict[str, Any]]:
+        """Watch-only: what to switch by hand so reality follows the plan."""
+        if not self.dry_run or not self.enabled:
+            self._recommended_since = {}
+            return []
+        cs = (self.hass.config.language or "").startswith("cs")
+        text = _SUMMARY_CS if cs else _SUMMARY_EN
+        items: list[dict[str, Any]] = []
+        for subentry_id, device in self.devices.items():
+            if not device.enabled:
+                continue
+            actions = device.pending_actions()
+            if not actions:
+                continue
+            parts = []
+            for action in actions:
+                kind = action[0]
+                if kind == "current":
+                    parts.append(text["rec_current"].format(a=action[1]))
+                elif kind == "phases":
+                    parts.append(text["rec_phases"].format(p=action[1]))
+                elif kind == "start":
+                    parts.append(text["rec_start"].format(a=action[1], p=action[2]))
+                else:
+                    parts.append(text[f"rec_{kind}"])
+            items.append(
+                {"id": subentry_id, "device": device.name, "text": f"{device.name}: {', '.join(parts)}"}
+            )
+        export = self._export_recommendation(text)
+        if export:
+            items.append(export)
+        now = dt_util.now().isoformat()
+        since = {i["id"]: self._recommended_since.get(i["id"] + i["text"], now) for i in items}
+        self._recommended_since = {i["id"] + i["text"]: since[i["id"]] for i in items}
+        for item in items:
+            item["since"] = since[item["id"]]
+        return items
+
+    def _export_unit(self) -> str:
+        entity_id = self.conf.get(CONF_EXPORT_LIMIT_ENTITY)
+        state = self.hass.states.get(entity_id) if entity_id else None
+        return (state.attributes.get("unit_of_measurement") if state else None) or ""
+
+    def _export_recommendation(self, text: dict[str, Any]) -> dict[str, Any] | None:
+        entity_id = self.conf.get(CONF_EXPORT_LIMIT_ENTITY)
+        if not self._export_controlled() or self._export_raised is None:
+            return None
+        wanted = self._f(CONF_EXPORT_LIMIT_RAISED if self._export_raised else CONF_EXPORT_LIMIT_NORMAL)
+        current = state_float(self.hass, entity_id)
+        if current is None or abs(current - wanted) < 0.5:
+            return None
+        state = self.hass.states.get(entity_id)
+        unit = (state.attributes.get("unit_of_measurement") if state else None) or ""
+        key = "rec_export_raise" if self._export_raised else "rec_export_lower"
+        return {
+            "id": "export_limit",
+            "device": "export_limit",
+            "text": text[key].format(v=f"{wanted:g} {unit}".strip()),
+        }
+
+    async def async_execute_recommendation(self, rec_id: str | None = None) -> int:
+        """Carry out one (or all) watch-only recommendations on request."""
+        done = 0
+        for item in list((self.data.recommendations if self.data else []) or []):
+            if rec_id and item["id"] != rec_id:
+                continue
+            if item["id"] == "export_limit":
+                value = self._f(CONF_EXPORT_LIMIT_RAISED if self._export_raised else CONF_EXPORT_LIMIT_NORMAL)
+                await async_set_number(self.hass, self.conf[CONF_EXPORT_LIMIT_ENTITY], value)
+            elif device := self.devices.get(item["id"]):
+                await device.apply()
+            _LOGGER.info("Recommendation carried out by hand: %s", item["text"])
+            done += 1
+        if done:
+            await self.async_request_refresh()
+        return done
 
     async def _async_apply(self, active: list[ManagedDevice]) -> None:
         if self.dry_run:
@@ -742,8 +855,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         keeps the battery in shallow cycles at the top and the devices from
         toggling; their own delays and minimum times still apply.
         """
-        sun = self.hass.states.get("sun.sun")
-        producing = sun is None or sun.state == "above_horizon"
+        producing = self._producing()
         full = self._f(CONF_BATTERY_FULL_SOC)
         if not self.conf.get(CONF_BATTERY_BORROW) or snap.battery_priority or not producing:
             self._borrow_active = False
@@ -851,6 +963,14 @@ _SUMMARY_CS: dict[str, Any] = {
     "missing_input": "Chybí data ze střídače",
     "failsafe": "Pojistka: chybí data ze střídače, přebytková zařízení se vypínají",
     "dry_run": "Jen sledování",
+    "rec_on": "zapnout",
+    "rec_off": "vypnout",
+    "rec_stop": "zastavit nabíjení",
+    "rec_start": "spustit nabíjení ({a} A, {p} f)",
+    "rec_current": "nastavit {a} A",
+    "rec_phases": "přepnout na {p} f",
+    "rec_export_raise": "Limit přetoku: zvýšit na {v}",
+    "rec_export_lower": "Limit přetoku: snížit na {v}",
     "battery": "Baterie {soc} % → cíl {target} % ({who})",
     "battery_first": "přednost baterie",
     "devices_first": "přednost zařízení",
@@ -872,6 +992,14 @@ _SUMMARY_EN: dict[str, Any] = {
     "missing_input": "Missing inverter data",
     "failsafe": "Fail-safe: no inverter data, surplus devices are stopped",
     "dry_run": "Watch only",
+    "rec_on": "turn on",
+    "rec_off": "turn off",
+    "rec_stop": "stop charging",
+    "rec_start": "start charging ({a} A, {p} ph)",
+    "rec_current": "set {a} A",
+    "rec_phases": "switch to {p} ph",
+    "rec_export_raise": "Export limit: raise to {v}",
+    "rec_export_lower": "Export limit: lower to {v}",
     "battery": "Battery {soc} % → target {target} % ({who})",
     "battery_first": "battery first",
     "devices_first": "devices first",

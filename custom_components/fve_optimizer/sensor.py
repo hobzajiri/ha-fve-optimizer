@@ -85,6 +85,11 @@ HUB_SENSORS: tuple[HubSensorDescription, ...] = (
         value_fn=lambda s: s.headroom_a,
     ),
     HubSensorDescription(
+        key="recommendations",
+        translation_key="recommendations",
+        value_fn=lambda s: len(s.recommendations),
+    ),
+    HubSensorDescription(
         key="last_decision",
         translation_key="last_decision",
         value_fn=lambda s: s.decision,
@@ -137,6 +142,8 @@ class HubSensor(FveOptimizerEntity, SensorEntity):
         snap = self.coordinator.data
         if snap is None:
             return None
+        if self.entity_description.key == "recommendations":
+            return {"items": snap.recommendations}
         if self.entity_description.key == "last_decision":
             return {
                 "details": snap.decision_lines,

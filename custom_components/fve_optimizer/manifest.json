@@ -7,12 +7,13 @@
   "config_flow": true,
   "dependencies": [
     "frontend",
-    "http"
+    "http",
+    "panel_custom"
   ],
   "documentation": "https://github.com/hobzajiri/ha-fve-optimizer",
   "integration_type": "service",
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/hobzajiri/ha-fve-optimizer/issues",
   "requirements": [],
-  "version": "0.1.2"
+  "version": "0.2.0"
 }

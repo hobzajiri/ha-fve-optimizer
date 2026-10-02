@@ -60,19 +60,21 @@ A **Přidat nabíječku EV**:
 | Senzor výkonu | `sensor.sim_ev_power` |
 | Auto připojeno | `binary_sensor.sim_ev_connected` |
 
-## Dashboard
+## Dashboard „Simulátor“
 
-V postranním panelu je **FVE Optimizer** (YAML dashboard). Obsahuje posuvníky
-simulátoru, graf toků energie, poslední rozhodnutí, stav optimizeru a
-nastavení všech zařízení. Generuje se z registru entit, protože ID entit
-závisí na jazyku a oblastech. Po přidání zařízení nebo nových funkcí ho
-přegeneruj:
+V postranním panelu jsou dvě položky:
+
+* **FVE Optimizer**: panel přímo z integrace (stejný jako v produkci), se
+  záložkami Přehled, Historie, Statistiky a Nastavení.
+* **Simulátor**: jen pro vývoj. Posuvníky simulátoru, vedle reakce optimizeru
+  (souhrn, zařízení, doporučení) a řízení s logem rozhodnutí.
+
+Simulátor se generuje z registru entit (ID závisí na jazyku a oblastech). Po
+přidání zařízení ho přegeneruj a obnov stránku:
 
 ```bash
 docker exec -i fve-optimizer-dev python3 - < make_dashboard.py
 ```
-
-Pak jen obnov stránku v prohlížeči.
 
 ## Co zkoušet
 

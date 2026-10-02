@@ -46,155 +46,62 @@ def entities_card(title, ids):
     return {"type": "entities", "title": title, "entities": ids} if ids else None
 
 
-decision = hub("last_decision")
-cards = []
+subs = list(subentries)
+reason = [dev(sid, "reason") for sid in subs]
+allocated = [dev(sid, "allocated") for sid in subs]
 
-# Graphical card shipped with the integration (power flow + decision).
-if hub("status"):
-    cards.append({"type": "custom:fve-optimizer-card", "entity": hub("status")})
 
-cards.append(
-    {
-        "type": "entities",
-        "title": "Simulátor",
-        "entities": [
-            "input_number.sim_pv_available",
-            "input_number.sim_house_load",
-            "input_number.sim_battery_soc",
-            "input_number.sim_water_temp",
-            "input_number.sim_forecast_remaining",
-            "input_number.sim_speed",
-            "input_boolean.sim_ev_connected",
-            "input_boolean.sim_hdo",
-            {"type": "section", "label": "Ovládá integrace"},
-            "input_number.sim_export_limit",
-            "input_boolean.sim_boiler",
-            "input_boolean.sim_ev_charge",
-            "input_boolean.sim_ev_3phase",
-            "input_number.sim_ev_current",
-        ],
-    }
-)
-cards.append(
-    {
-        "type": "history-graph",
-        "title": "Toky energie (2 h)",
-        "hours_to_show": 2,
-        "entities": [
-            "sensor.sim_pv_power",
-            "sensor.sim_grid_power",
-            "sensor.sim_battery_power",
-            "sensor.sim_load",
-            "sensor.sim_boiler_power",
-            "sensor.sim_ev_power",
-        ],
-    }
-)
-DECISION_TEMPLATE = """
-{%- macro w(v) -%}{{ '{:,.0f}'.format(v | float(0)).replace(',', ' ') }} W{%- endmacro -%}
-{%- macro n(v) -%}{{ (v | float(0) | round(1) | string).replace('.', ',') }}{%- endmacro -%}
-{%- set d = state_attr('ENTITY', 'data') -%}
-{%- if not d -%}
-Zatím žádné rozhodnutí.
-{%- else -%}
-<ha-alert alert-type="{{ 'warning' if d.battery_priority else 'success' }}">{{ d.headline }}</ha-alert>
+def card(c):
+    return c if c and c.get("entities", True) else None
 
-| | |
-|:--|--:|
-| Síť | {% if d.grid_w is none %}?{% elif d.grid_w < -50 %}↑ {{ w(-d.grid_w) }} do sítě{% elif d.grid_w > 50 %}↓ {{ w(d.grid_w) }} ze sítě{% else %}≈ 0 W{% endif %} |
-| Baterie | {{ d.battery_soc | round(0) }} % → cíl {{ d.battery_target_soc | round(0) }} % · {% if d.battery_w is none %}?{% elif d.battery_w > 50 %}nabíjí {{ w(d.battery_w) }}{% elif d.battery_w < -50 %}vybíjí {{ w(-d.battery_w) }}{% else %}klid{% endif %} |
-| Přebytek | {{ w(d.budget_w) }} · rozděleno {{ w(d.allocated_w) }} |
-{%- if d.forecast_kwh is not none %}
-| Predikce | {{ n(d.forecast_kwh) }} kWh / potřeba {{ n(d.forecast_need_kwh) }} kWh {{ '✔' if d.forecast_covers else '✘' }} |
-{%- endif %}
-| Limit přetoku | {{ 'zvýšen' if d.export_raised else 'běžný' }}{{ ' · dorovnání z baterie' if d.borrow else '' }} |
-{%- if d.hdo is not none %}
-| Tarif | {{ 'NT (HDO)' if d.hdo else 'VT' }} |
-{%- endif %}
-{%- if d.headroom_a is not none %}
-| Rezerva jističe | {{ n(d.headroom_a) }} A |
-{%- endif %}
 
-| Zařízení | Stav | Výkon | Detail |
-|:--|:--|--:|:--|
-{%- for x in d.devices %}
-| {{ '**' ~ x.name ~ '**' if x.active else x.name }} | {{ x.state }}{{ ' ⚡' if x.urgent else '' }}{{ ' ⬆︎' if x.min_first else '' }} | {{ w(x.allocated_w) if x.active else '–' }} | {% set p = [] %}{% if x.current and x.active %}{% set p = p + [x.phases ~ 'f · ' ~ x.current ~ ' A'] %}{% endif %}{% if x.temperature is not none %}{% set p = p + [n(x.temperature) ~ ' °C'] %}{% endif %}{% if x.soc is not none %}{% set p = p + ['SoC ' ~ x.soc ~ ' %'] %}{% endif %}{% if x.plan %}{% set p = p + ['plán ' ~ x.plan | join(', ')] %}{% endif %}{% if x.at_risk %}{% set p = p + ['⚠ nestihne'] %}{% endif %}{{ p | join(' · ') }} |
-{%- endfor %}
+def view(title, path, cards):
+    return {"title": title, "path": path, "type": "masonry", "cards": [c for c in cards if c]}
 
-<small>Změněno {{ as_timestamp(d.changed_at) | timestamp_custom('%H:%M:%S') }} · ⚡ termín (i ze sítě) · ⬆︎ minimum před baterií</small>
 
-<details><summary>Podrobnosti</summary>
+status = hub("status")
 
-{% for l in state_attr('ENTITY', 'details') or [] %}`{{ l }}`<br>{% endfor %}
-</details>
-{%- endif -%}
-"""
-
-if decision:
-    cards.append(
-        {
-            "type": "markdown",
-            "title": "Poslední rozhodnutí",
-            "content": DECISION_TEMPLATE.replace("ENTITY", decision).strip(),
-        }
-    )
-cards.append(
-    entities_card(
-        "Optimizer",
-        [
-            hub("enabled"),
-            hub("status"),
-            hub("budget"),
-            hub("allocated"),
-            hub("managed"),
-            hub("effective_target_soc"),
-            hub("battery_priority"),
-            hub("forecast_covers_battery"),
-            hub("export_limit_raised"),
-            hub("hdo"),
-            hub("breaker_headroom"),
-        ],
-    )
-)
-
-device_cards = []
-for subentry_id, sub in subentries.items():
-    keys = [
-        "control", "reason", "allocated", "active", "priority",
-        # boiler
-        "nominal_power_w", "max_temperature", "max_temperature_hysteresis",
-        "deadline_enabled", "deadline_time", "deadline_temperature",
-        "deadline_hdo_only", "deadline_earliest",
-        "legionella_enabled", "legionella_temperature", "legionella_interval_days",
-        # EV
-        "min_current", "max_current", "phases",
-        "ev_deadline_enabled", "ev_deadline_time", "ev_deadline_soc", "ev_deadline_hdo_only",
-    ]
-    card = entities_card(sub["title"], [dev(subentry_id, k) for k in keys])
-    if card:
-        device_cards.append(card)
-
-settings = entities_card(
-    "Nastavení baterie a řízení",
-    [
-        hub(k)
-        for k in (
-            "battery_target_soc", "night_target", "night_power_w", "night_extra_hours",
-            "battery_reserve_soc", "forecast_min_soc", "forecast_safety_factor",
-            "export_limit_control", "export_limit_normal", "export_limit_raised",
-            "reserve_w", "main_breaker_a", "update_interval",
-        )
+# Dev only: the simulator next to the optimizer's reaction. History, statistics
+# and settings live in the integration's own "FVE Optimizer" panel.
+simulator = {
+    "type": "entities",
+    "title": "Simulátor",
+    "entities": [
+        {"type": "section", "label": "Výroba a spotřeba"},
+        "input_number.sim_pv_available",
+        "input_number.sim_house_load",
+        "input_number.sim_forecast_remaining",
+        {"type": "section", "label": "Stav"},
+        "input_number.sim_battery_soc",
+        "input_number.sim_water_temp",
+        "input_boolean.sim_ev_connected",
+        "input_boolean.sim_hdo",
+        {"type": "section", "label": "Čas"},
+        "input_number.sim_speed",
     ],
-)
+}
+control = entities_card("Řízení", [hub("enabled"), hub("dry_run")] + [dev(sid, "control") for sid in subs])
 
 dashboard = {
-    "title": "FVE Optimizer",
+    "title": "Simulátor",
     "views": [
         {
-            "title": "Ladění",
-            "path": "ladeni",
-            "type": "masonry",
-            "cards": [c for c in cards + device_cards + [settings] if c],
+            "title": "Simulátor",
+            "path": "simulator",
+            "type": "sections",
+            "max_columns": 3,
+            "sections": [
+                {"type": "grid", "cards": [simulator]},
+                {"type": "grid", "cards": [c for c in (
+                    {"type": "custom:fve-optimizer-card", "entity": status,
+                     "sections": ["summary", "devices"]} if status else None,
+                ) if c]},
+                {"type": "grid", "cards": [c for c in (
+                    control,
+                    {"type": "custom:fve-optimizer-card", "entity": status, "sections": ["log"]}
+                    if status else None,
+                ) if c]},
+            ],
         }
     ],
 }
@@ -205,7 +112,4 @@ out.write_text(
     "# Generated by dev/make_dashboard.py – do not edit, regenerate instead.\n"
     + yaml.safe_dump(dashboard, allow_unicode=True, sort_keys=False)
 )
-print(f"Written {out} ({len(dashboard['views'][0]['cards'])} cards)")
-missing = [k for k in ("last_decision", "hdo") if not hub(k)]
-if missing:
-    print("Not yet created (restart HA after updating the integration):", ", ".join(missing))
+print(f"Written {out}")

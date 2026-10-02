@@ -231,6 +231,17 @@ class ManagedDevice:
         self.status.urgent = False
         return 0.0
 
+    def state_now(self) -> dict[str, Any]:
+        """Actual state for the recommendation table: on, current, phases."""
+        return {}
+
+    def pending_actions(self) -> list[tuple[Any, ...]]:
+        """What :meth:`apply` would change now: ("on",), ("current", 8)…
+
+        Used in watch-only mode to recommend manual actions.
+        """
+        return []
+
     def _solar_for(self, deadline: datetime, now: datetime, need_kwh: float) -> float:
         """Part of ``need_kwh`` the forecast covers before a deadline later today."""
         if self.solar_kwh is None or deadline.date() != now.date() or now >= deadline:
@@ -553,6 +564,14 @@ class SwitchedDevice(ManagedDevice):
                 headroom.consume(self.nominal_w, self.phases)
         return status.allocated_w
 
+    def state_now(self) -> dict[str, Any]:
+        return {"on": self._is_on}
+
+    def pending_actions(self) -> list[tuple[Any, ...]]:
+        if self._is_on is None or self._target_on == self._is_on:
+            return []
+        return [("on",) if self._target_on else ("off",)]
+
     async def apply(self) -> None:
         if self._is_on is None or self._target_on == self._is_on:
             return
@@ -865,6 +884,23 @@ class EvChargerDevice(ManagedDevice):
         status.reason = "deadline_charging"
         status.extra = {"phases": phases, "current": amps, **self._deadline_info}
         return allocated
+
+    def state_now(self) -> dict[str, Any]:
+        return {"on": self._charging, "current": self._current_a, "phases": self._phases_now}
+
+    def pending_actions(self) -> list[tuple[Any, ...]]:
+        if self._charging is None:
+            return []
+        if not self._target_on:
+            return [("stop",)] if self._charging else []
+        actions: list[tuple[Any, ...]] = []
+        if self.can_switch_phases and self._target_phases != self._phases_now:
+            actions.append(("phases", self._target_phases))
+        if self._current_a != self._target_a:
+            actions.append(("current", self._target_a))
+        if not self._charging:
+            actions.append(("start", self._target_a, self._target_phases))
+        return actions
 
     async def apply(self) -> None:
         if self._charging is None:

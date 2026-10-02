@@ -634,6 +634,9 @@
       },
       "last_decision": {
         "name": "Last decision"
+      },
+      "recommendations": {
+        "name": "Recommendations"
       }
     },
     "binary_sensor": {
@@ -796,6 +799,18 @@
       },
       "device_ev_deadline_time": {
         "name": "Charging deadline"
+      }
+    }
+  },
+  "services": {
+    "execute_recommendation": {
+      "name": "Execute recommendation",
+      "description": "In watch-only mode, carry out a recommended action by hand – one by ID, or all.",
+      "fields": {
+        "id": {
+          "name": "Recommendation ID",
+          "description": "ID from the items attribute of the Recommendations entity (empty = all)."
+        }
       }
     }
   }

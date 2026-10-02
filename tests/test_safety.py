@@ -136,3 +136,70 @@ async def test_current_damping(hass: HomeAssistant, freezer) -> None:
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert ("set_value", "input_number.ev_current", 8) in rec.calls
+
+
+async def test_one_quiet_input_is_not_frozen(hass: HomeAssistant, freezer) -> None:
+    """E.g. battery discharge stays 0 W for hours and the integration does not rewrite it."""
+    rec = Recorder(hass)
+    _states(hass, grid=-3000, batt=0, soc=95, limit="10000", switch__boiler="on")
+    coordinator = await _setup(hass, _entry(TIMEOUT, ("switched", BOILER)))
+    for _ in range(4):
+        freezer.tick(120)
+        hass.states.async_set("sensor.grid", "-3000", force_update=True)  # still reported
+        await coordinator.async_refresh()
+    assert coordinator.data.reason == "dispatching"
+    assert not coordinator.data.stale_inputs
+    assert ("turn_off", "switch.boiler", None) not in rec.calls
+
+
+async def test_watch_only_recommendations_and_manual_execution(hass: HomeAssistant) -> None:
+    rec = Recorder(hass)
+    _states(hass, grid=-3000, batt=0, soc=95, limit="0", switch__boiler="off")
+    entry = _entry({**TIMEOUT, "dry_run": True}, ("switched", BOILER))
+    coordinator = await _setup(hass, entry)
+    assert rec.calls == []
+    items = coordinator.data.recommendations
+    texts = [i["text"] for i in items]
+    assert any(t.startswith("Bojler: ") for t in texts)
+    assert any(i["id"] == "export_limit" for i in items)
+    assert all(i["since"] for i in items)
+    # Data for the recommendation table: wanted vs. actual state.
+    dev = coordinator.data.live_data["devices"][0]
+    assert dev["active"] is True and dev["now"] == {"on": False} and dev["pending"] is True
+    assert coordinator.data.live_data["export_limit_target"] == 10000.0
+    assert coordinator.data.live_data["export_limit_now"] == 0.0
+    state = [s for s in hass.states.async_all("sensor") if "items" in s.attributes][0]
+    assert state.state == str(len(items))
+
+    # Carry out only the boiler recommendation by hand.
+    boiler_id = next(i["id"] for i in items if i["text"].startswith("Bojler"))
+    result = await hass.services.async_call(
+        "fve_optimizer", "execute_recommendation", {"id": boiler_id}, blocking=True, return_response=True
+    )
+    await hass.async_block_till_done()
+    assert result == {"executed": 1}
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+    assert not any(c[1] == "input_number.export_limit" for c in rec.calls)
+
+    # And the rest (export limit).
+    await hass.services.async_call("fve_optimizer", "execute_recommendation", {}, blocking=True)
+    await hass.async_block_till_done()
+    assert ("set_value", "input_number.export_limit", 10000.0) in rec.calls
+
+
+async def test_no_recommendations_when_controlling(hass: HomeAssistant) -> None:
+    Recorder(hass)
+    _states(hass, grid=-3000, batt=0, soc=95, limit="0", switch__boiler="off")
+    coordinator = await _setup(hass, _entry(TIMEOUT, ("switched", BOILER)))
+    assert coordinator.data.recommendations == []
+
+
+async def test_panel_is_registered(hass: HomeAssistant, hass_client) -> None:
+    Recorder(hass)
+    _states(hass, grid=0, batt=0, soc=95)
+    await _setup(hass, _entry(TIMEOUT))
+    panels = hass.data["frontend_panels"]
+    assert "fve-optimizer" in panels
+    client = await hass_client()
+    resp = await client.get("/fve_optimizer/fve-optimizer-panel.js")
+    assert resp.status == 200

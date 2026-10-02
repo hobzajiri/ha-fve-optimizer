@@ -105,14 +105,21 @@ a rozdíl, nejvýš polovinu kroku, dorovná baterie. Přebytek tak neteče do s
 
 ### Karta FVE Optimizer
 
-Integrace přináší vlastní kartu (bez HACS) se schématem toků energie (FV, síť,
-baterie se SoC a cílem, dům, řízená zařízení), odznaky stavu a řádky zařízení.
-Obnovuje se každý cyklus.
+Integrace přináší vlastní kartu (bez HACS) s rozhodnutím: souhrn (režim, priorita,
+přebytek, predikce, tarif, limit přetoku, jistič), řízená zařízení s doporučením
+(v režimu Jen sledovat s tlačítkem Provést) a log. Na toky energie použij např. Power Flow Card
+Plus; vlastní schéma toků jde zapnout částí `flow`. Obnovuje se každý cyklus.
+Pomocí `sections` jde kartu rozdělit do více sloupců, např. jedna karta
+s doporučeními a druhá jen s logem
+(`sections: [log]`). Log ukazuje jen to, co se oproti předchozímu rozhodnutí
+změnilo; celé rozhodnutí je v nápovědě po najetí myší.
 
 ```yaml
 type: custom:fve-optimizer-card
 entity: sensor.fve_optimizer_status   # entita „Stav“ FVE Optimizeru
 title: FVE Optimizer                  # volitelné, false = bez nadpisu
+log: 20                               # počet řádků logu rozhodnutí, false = bez logu
+sections: [summary, devices, log]   # výchozí; + flow = schéma toků
 ```
 
 ### Bezpečnost
@@ -127,6 +134,36 @@ title: FVE Optimizer                  # volitelné, false = bez nadpisu
 * **Jen sledovat:** přepínač, kdy integrace počítá, loguje a zobrazuje, ale nic
   nespíná a nezapisuje limit přetoku. Doporučený první krok na skutečné
   instalaci.
+
+### Statistika spotřeby a nákladů
+
+Každé zařízení má kumulativní entity **Energie**, **Energie ze slunce**,
+**Energie z baterie**, **Energie ze sítě** a **Náklady** (Kč). HA z nich sám
+počítá denní a měsíční statistiky (panel: grafy po dnech). Atribut `today`
+ukazuje dnešní hodnotu, karta „dnes 3,2 kWh · 4,10 Kč · ☀ 65 %“.
+
+* Řízená zařízení jsou zátěže, které se dají posunout, proto se jim odběr ze sítě
+  a vybíjení baterie připisuje přednostně (dům bere slunce první).
+* Náklady = energie ze sítě × **Cena NT** v HDO, jinak × **Cena VT**. Slunce
+  a baterie se počítají zdarma.
+* Měří se skutečná spotřeba (nejlépe se senzorem výkonu zařízení), takže to
+  funguje i v režimu Jen sledovat. Statistiky přežijí restart.
+
+Ceny NT/VT (krok HDO v průvodci nebo entity) slouží jen pro zobrazení
+a statistiku, o rozhodování neovlivňují.
+
+### AI hodnocení
+
+Volitelně každý den (výchozí 21:00) nebo tlačítkem **Vyhodnotit nyní** pošle
+FVE Optimizer podklady dne (spotřeba a náklady zařízení, odběr/přetok, spínání,
+pojistka, log rozhodnutí, nastavení) libovolné **AI Task** entitě v HA – Google
+Gemini, Anthropic Claude, OpenAI, Ollama… AI vrátí známku 1–10, shrnutí, co
+fungovalo, problémy a **návrhy úprav nastavení**. Sama nic nemění.
+
+* Nastavení: integrace → **Konfigurovat** → krok Řízení → **AI pro denní hodnocení**.
+* Výsledek: entita *AI hodnocení* (známka, text v atributech), panel → záložka
+  **Hodnocení** (poslední hodnocení a historie 14 dní), služba
+  `fve_optimizer.run_review`.
 
 ### Priority
 

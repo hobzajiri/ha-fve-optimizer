@@ -7,7 +7,7 @@ from typing import Final
 
 DOMAIN: Final = "fve_optimizer"
 
-PLATFORMS: Final = ["sensor", "binary_sensor", "switch", "number", "select", "time"]
+PLATFORMS: Final = ["sensor", "binary_sensor", "switch", "number", "select", "time", "button"]
 
 NOMINAL_VOLTAGE: Final = 230.0
 
@@ -50,6 +50,8 @@ BORROW_STEP_SHARE: Final = 0.5  # at most half a step comes from the battery
 BORROW_SOC_BAND: Final = 5.0  # stop borrowing this much below "full"
 CURRENT_UP_DELAY: Final = 30  # s a higher charging current must hold before it is set
 CONF_HDO_ENTITY: Final = "hdo_entity"
+CONF_PRICE_VT: Final = "price_vt"  # Kč/kWh incl. distribution, shown on the card
+CONF_PRICE_NT: Final = "price_nt"
 CONF_EXPORT_LIMIT_NORMAL: Final = "export_limit_normal"
 CONF_EXPORT_LIMIT_RAISED: Final = "export_limit_raised"
 CONF_PHASE_CURRENTS: Final = "phase_current_sensors"
@@ -59,6 +61,10 @@ CONF_RESERVE_W: Final = "reserve_w"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
 CONF_INPUT_TIMEOUT: Final = "input_timeout_s"  # stale / missing inverter data → fail-safe
 CONF_DRY_RUN: Final = "dry_run"  # compute and show, never switch anything
+# Daily AI review of the decisions (via Home Assistant's AI Task)
+CONF_AI_TASK_ENTITY: Final = "ai_task_entity"
+CONF_AI_REVIEW_ENABLED: Final = "ai_review_enabled"
+CONF_AI_REVIEW_TIME: Final = "ai_review_time"
 
 DEFAULTS: Final[dict[str, object]] = {
     CONF_GRID_IMPORT_POSITIVE: True,
@@ -74,6 +80,8 @@ DEFAULTS: Final[dict[str, object]] = {
     CONF_NIGHT_EXTRA_H: 2.0,
     CONF_BATTERY_RESERVE_SOC: 10.0,
     CONF_EXPORT_CONTROL: True,
+    CONF_PRICE_VT: 0.0,
+    CONF_PRICE_NT: 0.0,
     CONF_EXPORT_RERAISE: False,
     CONF_BATTERY_FULL_SOC: 99.0,
     CONF_BATTERY_BORROW: True,
@@ -85,6 +93,8 @@ DEFAULTS: Final[dict[str, object]] = {
     CONF_UPDATE_INTERVAL: 15,
     CONF_INPUT_TIMEOUT: 300,
     CONF_DRY_RUN: False,
+    CONF_AI_REVIEW_ENABLED: True,
+    CONF_AI_REVIEW_TIME: "21:00:00",
 }
 
 # --- Subentries: managed devices ---------------------------------------------
@@ -214,6 +224,8 @@ HUB_TUNABLES: Final[tuple[Tunable, ...]] = (
     Tunable(CONF_FORECAST_SAFETY, 1, 3, 0.05),
     Tunable(CONF_HOUSE_AVG_POWER_W, 0, 10000, 50, "W"),
     Tunable(CONF_EXPORT_CONTROL, kind="switch"),
+    Tunable(CONF_PRICE_VT, 0, 50, 0.01, "Kč/kWh"),
+    Tunable(CONF_PRICE_NT, 0, 50, 0.01, "Kč/kWh"),
     Tunable(CONF_EXPORT_RERAISE, kind="switch"),
     Tunable(CONF_BATTERY_FULL_SOC, 80, 100, 0.5, "%"),
     Tunable(CONF_BATTERY_BORROW, kind="switch"),
@@ -226,6 +238,8 @@ HUB_TUNABLES: Final[tuple[Tunable, ...]] = (
     Tunable(CONF_UPDATE_INTERVAL, 5, 300, 1, "s"),
     Tunable(CONF_INPUT_TIMEOUT, 0, 3600, 10, "s"),
     Tunable(CONF_DRY_RUN, kind="switch"),
+    Tunable(CONF_AI_REVIEW_ENABLED, kind="switch", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_AI_REVIEW_TIME, kind="time", requires=CONF_AI_TASK_ENTITY),
 )
 
 PHASES_TUNABLE: Final = Tunable(CONF_PHASES, options=("1", "3"), kind="select")

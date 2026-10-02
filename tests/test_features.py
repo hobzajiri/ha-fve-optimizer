@@ -635,3 +635,44 @@ def test_egd_2359_merges_over_midnight() -> None:
     )
     assert len(windows) == 1
     assert windows[0][0].hour == 21 and windows[0][1].hour == 9
+
+
+async def test_device_energy_and_cost_statistics(hass: HomeAssistant, freezer) -> None:
+    await hass.config.async_set_time_zone("Europe/Prague")
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 2, 10, 0, tzinfo=PRAGUE))  # VT (manual HDO 13–16)
+    boiler = {**BOILER, "power_sensor": "sensor.boiler_power"}
+    _states(hass, grid=500, batt=-300, soc=95, limit="10000", switch__boiler="on", sensor__boiler_power="2000")
+    entry = _entry({"night_target": False, "price_vt": 4.0, "price_nt": 2.0, "battery_borrow": False,
+                    "hdo_source": "manual", "hdo_manual_workday": "13:00-16:00"},
+                   ("switched", {**boiler, "off_tolerance_w": 5000}))
+    coordinator = await _setup(hass, entry)
+    sid = next(iter(coordinator.devices))
+    # One hour in 15 s steps: 2 kW = 0.5 grid + 0.3 battery + 1.2 solar.
+    for _ in range(240):
+        freezer.tick(15)
+        await coordinator.async_refresh()
+    stats = coordinator.device_stats(sid)
+    assert round(stats["total"], 2) == 2.0
+    assert round(stats["grid"], 2) == 0.5
+    assert round(stats["battery"], 2) == 0.3
+    assert round(stats["solar"], 2) == 1.2
+    assert round(stats["cost"], 2) == 2.0  # 0.5 kWh × 4 Kč (VT)
+    assert round(coordinator.data.live_data["devices"][0]["today"]["cost"], 2) == 2.0
+    cost = [s for s in hass.states.async_all("sensor") if s.attributes.get("unit_of_measurement") == "CZK"]
+    assert cost and float(cost[0].state) == round(stats["cost"], 4)
+
+    # NT (13:00–16:00): half the price.
+    freezer.move_to(datetime(2026, 10, 2, 13, 0, tzinfo=PRAGUE))
+    await coordinator.async_refresh()
+    for _ in range(240):
+        freezer.tick(15)
+        await coordinator.async_refresh()
+    # + 1 Kč for the hour in NT (and ~0.01 Kč for the capped 45 s gap after the time jump).
+    assert abs(coordinator.device_stats(sid)["cost"] - 3.0) < 0.02
+
+    # Survives a restart.
+    await coordinator._state_store.async_save(coordinator._saved_state)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert abs(entry.runtime_data.device_stats(sid)["cost"] - 3.0) < 0.02

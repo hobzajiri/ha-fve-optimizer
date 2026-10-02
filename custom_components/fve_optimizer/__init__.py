@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 import voluptuous as vol
 from homeassistant.helpers import config_validation as cv, device_registry as dr
+from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN, PLATFORMS
@@ -56,6 +57,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             done += await entry.runtime_data.async_execute_recommendation(call.data.get("id"))
         return {"executed": done}
 
+    async def run_review(call: ServiceCall) -> ServiceResponse:
+        """Run the AI review of today's decisions now."""
+        reviews = []
+        for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+            reviews.append(await entry.runtime_data.async_run_review())
+        return {"reviews": reviews}
+
+    hass.services.async_register(
+        DOMAIN, "run_review", run_review, supports_response=SupportsResponse.OPTIONAL
+    )
     hass.services.async_register(
         DOMAIN,
         "execute_recommendation",
@@ -85,6 +96,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: FveOptimizerConfigEntry)
     # First cycle runs after the switch entities restored their states.
     await coordinator.async_refresh()
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
+    entry.async_on_unload(
+        async_track_time_change(hass, coordinator.async_scheduled_review, second=0)
+    )
     return True
 
 

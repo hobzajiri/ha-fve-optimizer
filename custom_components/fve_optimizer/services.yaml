@@ -5,3 +5,4 @@ execute_recommendation:
       example: export_limit
       selector:
         text:
+run_review:

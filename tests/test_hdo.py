@@ -202,3 +202,26 @@ async def test_egd_offline_uses_cached_windows(hass: HomeAssistant, aioclient_mo
     state = hass.states.get("binary_sensor.fve_optimizer_hdo_low_tariff")
     assert state.state == "on"
     assert state.attributes["error"]
+
+
+async def test_tariff_data_for_card(hass: HomeAssistant, freezer) -> None:
+    await hass.config.async_set_time_zone("Europe/Prague")
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 2, 10, 30, tzinfo=PRAGUE))  # Friday, VT
+    _states(hass, grid=0, batt=0, soc=95)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="FVE Optimizer",
+        data={**MAIN, "hdo_source": "manual", "hdo_manual_workday": "00:00-09:00; 13:00-16:00",
+              "price_vt": 3.4, "price_nt": 2.1},
+    )
+    coordinator = await _setup(hass, entry)
+    data = coordinator.data.live_data
+    assert data["price_vt"] == 3.4 and data["price_nt"] == 2.1
+    assert data["hdo"] is False
+    assert data["hdo_window"] is None
+    assert data["hdo_next_window"][0].startswith("2026-10-02T13:00")
+    freezer.move_to(datetime(2026, 10, 2, 14, 0, tzinfo=PRAGUE))
+    await coordinator.async_refresh()
+    data = coordinator.data.live_data
+    assert data["hdo"] is True
+    assert data["hdo_window"][1].startswith("2026-10-02T16:00")

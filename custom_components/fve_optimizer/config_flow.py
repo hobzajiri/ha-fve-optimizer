@@ -69,6 +69,9 @@ from .const import (
     CONF_EV_DEADLINE_TIME,
     CONF_EV_EFFICIENCY,
     CONF_EV_SOC_SENSOR,
+    CONF_AI_REVIEW_ENABLED,
+    CONF_AI_REVIEW_TIME,
+    CONF_AI_TASK_ENTITY,
     CONF_BATTERY_BORROW,
     CONF_BATTERY_FULL_SOC,
     CONF_EXPORT_CONTROL,
@@ -103,6 +106,8 @@ from .const import (
     CONF_ON_DELAY,
     CONF_ON_MARGIN,
     CONF_PHASE_CURRENTS,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     CONF_PHASE_SWITCH,
     CONF_PHASE_SWITCH_INTERVAL,
     CONF_PHASES,
@@ -228,6 +233,10 @@ def _control_schema(v: dict[str, Any]) -> vol.Schema:
             _req(CONF_UPDATE_INTERVAL, v, DEFAULTS): _tunable(CONF_UPDATE_INTERVAL),
             _req(CONF_INPUT_TIMEOUT, v, DEFAULTS): _tunable(CONF_INPUT_TIMEOUT),
             _req(CONF_DRY_RUN, v, DEFAULTS): selector.BooleanSelector(),
+            # Daily AI review (any AI Task entity: Google, Anthropic, OpenAI, Ollama…)
+            _opt(CONF_AI_TASK_ENTITY, v): _entity("ai_task"),
+            _req(CONF_AI_REVIEW_ENABLED, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_AI_REVIEW_TIME, v, DEFAULTS): selector.TimeSelector(),
         }
     )
 
@@ -308,6 +317,8 @@ class _HdoSteps:
             for key in HDO_KEYS:
                 self._data.pop(key, None)
             self._data["hdo_source"] = source
+            self._data[CONF_PRICE_VT] = user_input.get(CONF_PRICE_VT, 0.0)
+            self._data[CONF_PRICE_NT] = user_input.get(CONF_PRICE_NT, 0.0)
             if source == HDO_NONE:
                 return await self._async_finish()
             return await getattr(self, f"async_step_hdo_{source}")()
@@ -321,7 +332,9 @@ class _HdoSteps:
                         selector.SelectSelectorConfig(
                             options=HDO_SOURCES, translation_key="hdo_source"
                         )
-                    )
+                    ),
+                    _req(CONF_PRICE_VT, v, DEFAULTS): _tunable(CONF_PRICE_VT),
+                    _req(CONF_PRICE_NT, v, DEFAULTS): _tunable(CONF_PRICE_NT),
                 }
             ),
         )
@@ -524,6 +537,7 @@ class FveOptimizerOptionsFlow(_HdoSteps, OptionsFlow):
             CONF_FORECAST_REMAINING,
             CONF_EXPORT_LIMIT_ENTITY,
             CONF_PHASE_CURRENTS,
+            CONF_AI_TASK_ENTITY,
             *HDO_KEYS,
         ):
             if key not in self._data:

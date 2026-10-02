@@ -34,6 +34,9 @@ from .const import (
     CONF_NIGHT_TARGET,
     CONF_BREAKER_MARGIN_A,
     BORROW_SOC_BAND,
+    CONF_AI_REVIEW_ENABLED,
+    CONF_AI_REVIEW_TIME,
+    CONF_AI_TASK_ENTITY,
     CONF_BATTERY_BORROW,
     CONF_BATTERY_FULL_SOC,
     CONF_EXPORT_CONTROL,
@@ -54,6 +57,8 @@ from .const import (
     CONF_MIN_BEFORE_BATTERY,
     CONF_NOMINAL_VOLTAGE,
     CONF_PHASE_CURRENTS,
+    CONF_PRICE_NT,
+    CONF_PRICE_VT,
     CONF_PV_POWER,
     CONF_RESERVE_W,
     CONF_UPDATE_INTERVAL,
@@ -73,6 +78,14 @@ from .devices import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+DECISION_LOG_SIZE = 20
+STAT_KEYS = ("total", "solar", "battery", "grid", "cost")
+DAY_LOG_SIZE = 150
+SRC_OPTIMIZER = "integrace"
+SRC_RECOMMENDATION = "tlačítko Provést"
+SRC_EXTERNAL = "mimo integraci"
+REVIEW_HISTORY = 14
 
 
 @dataclass
@@ -142,6 +155,24 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._borrow_active = False
         self._inputs_bad_since: float | None = None
         self._recommended_since: dict[str, str] = {}
+        # Last decisions for the card's short log (newest first, survives restarts).
+        self._decision_log: list[dict[str, str]] = []
+        # Energy / cost statistics per device: {sid: {total, solar, battery, grid, cost,
+        # day, today: {...}}} – survive restarts.
+        self._stats: dict[str, dict[str, Any]] = {}
+        # Today's overview for the AI review (grid, switching, fail-safe, decisions).
+        self._day: dict[str, Any] = {}
+        self._prev_on: dict[str, bool | None] = {}
+        # Who caused the next on/off change of a device: (source, monotonic time).
+        self._expected: dict[str, tuple[str, float]] = {}
+        # Open watch-only recommendations: key → {id, text, since}; keys executed by hand.
+        self._open_recs: dict[str, dict[str, str]] = {}
+        self._executed_recs: set[str] = set()
+        self.reviews: list[dict[str, Any]] = []  # newest first
+        self.review_error: str | None = None
+        self.review_running = False
+        self._last_accounting: float | None = None
+        self._save_due: float | None = None
         self._failsafe_logged = False
         # Days the limit was raised / lowered – at most one raise per day.
         self._export_raised_day: str | None = None
@@ -163,6 +194,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._saved_state = await self._state_store.async_load() or {}
         for subentry_id, device in self.devices.items():
             device.restore(self._saved_state.get(subentry_id, {}))
+        self._decision_log = list(self._saved_state.get("_decision_log", []))[:DECISION_LOG_SIZE]
+        self._stats = {
+            sid: dict(v) for sid, v in self._saved_state.get("_stats", {}).items() if sid in self.devices
+        }
+        self._day = dict(self._saved_state.get("_day", {}))
+        self.reviews = list(self._saved_state.get("_reviews", []))[:REVIEW_HISTORY]
         export = self._saved_state.get("_export", {})
         self._export_raised_day = export.get("raised_day")
         self._export_lowered_day = export.get("lowered_day")
@@ -173,9 +210,18 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "raised_day": self._export_raised_day,
             "lowered_day": self._export_lowered_day,
         }
+        state["_decision_log"] = self._decision_log
+        state["_stats"] = self._stats
+        state["_day"] = self._day
+        state["_reviews"] = self.reviews
         if state != self._saved_state:
             self._saved_state = state
-            self._state_store.async_delay_save(lambda: state, 30)
+            # Statistics change every cycle: write at most once a minute (the store
+            # postpones a delayed save on every call, so keep a fixed deadline).
+            now = time.monotonic()
+            if self._save_due is None or now >= self._save_due:
+                self._save_due = now + 60
+            self._state_store.async_delay_save(lambda: state, max(self._save_due - now, 1))
 
     # -- configuration --------------------------------------------------------
     def apply_config(self, entry: ConfigEntry) -> None:
@@ -463,6 +509,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         base_house_w = (
             max(snap.house_w - snap.managed_w, 0.0) if snap.house_w is not None else None
         )
+        self._account(grid, battery, snap.hdo_active, now)
         target_soc, covered = self._battery_target(soc, base_house_w, snap)
         snap.effective_target_soc = target_soc
         snap.forecast_covers_battery = covered
@@ -514,6 +561,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
 
     def _finish(self, snap: DispatchSnapshot) -> DispatchSnapshot:
         snap.export_limit_raised = bool(self._export_raised)
+        self._track_switching()
         snap.recommendations = self._recommendations()
         self._save_state()
         self._log_decision(snap)
@@ -595,6 +643,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         snap.decision, snap.decision_lines, snap.decision_changed_at, snap.decision_data = (
             self._decision
         )
+        self._decision_log = [{"at": changed_at, "text": self._decision[0]}, *self._decision_log][
+            :DECISION_LOG_SIZE
+        ]
+        day_log = self.today()["log"]
+        day_log.append(f"{dt_util.now():%H:%M} {self._decision[0]}")
+        del day_log[:-DAY_LOG_SIZE]
         _LOGGER.debug("Decision changed\n%s", "\n".join(lines))
 
     def _decision_data(
@@ -621,9 +675,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "forecast_need_kwh": snap.forecast_need_kwh,
             "forecast_covers": snap.forecast_covers_battery,
             "export_raised": bool(self._export_raised),
-            "export_limit_now": state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY))
-            if self._export_controlled()
-            else None,
+            "export_limit_now": state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY)),
+            "export_limit_controlled": self._export_controlled(),
             "export_limit_target": (
                 self._f(CONF_EXPORT_LIMIT_RAISED if self._export_raised else CONF_EXPORT_LIMIT_NORMAL)
                 if self._export_controlled() and self._export_raised is not None
@@ -631,9 +684,18 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             ),
             "export_limit_unit": self._export_unit(),
             "hdo": snap.hdo_active,
+            **self._tariff_data(),
             "borrow": snap.borrow_active,
             "dry_run": snap.dry_run,
             "recommendations": snap.recommendations,
+            "log": self._decision_log,
+            "review": self.reviews[0] if self.reviews else None,
+            "review_history": [
+                {"date": r.get("date"), "score": r.get("score")} for r in self.reviews
+            ],
+            "review_enabled": bool(self.conf.get(CONF_AI_TASK_ENTITY)),
+            "review_running": self.review_running,
+            "review_error": self.review_error,
             "stale_inputs": snap.stale_inputs,
             "headroom_a": None if snap.headroom_a is None else round(snap.headroom_a, 1),
             "devices": [
@@ -654,6 +716,10 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "actual_w": round(d.status.actual_w),
                     "urgent": d.status.urgent,
                     "min_first": d.status.min_first,
+                    "today": {
+                        k: round(v, 3)
+                        for k, v in self._stats.get(d.subentry_id, {}).get("today", {}).items()
+                    },
                     "current": d.status.extra.get("current"),
                     "phases": d.status.extra.get("phases"),
                     "temperature": d.status.extra.get("temperature"),
@@ -773,7 +839,164 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._recommended_since = {i["id"] + i["text"]: since[i["id"]] for i in items}
         for item in items:
             item["since"] = since[item["id"]]
+        self._close_recommendations(items)
         return items
+
+    def _close_recommendations(self, items: list[dict[str, Any]]) -> None:
+        """Log how each watch-only recommendation ended (for the review)."""
+        current = {i["id"] + i["text"]: i for i in items}
+        day = self.today()
+        hhmm = lambda iso: dt_util.as_local(dt_util.parse_datetime(iso)).strftime("%H:%M")  # noqa: E731
+        for key, rec in list(self._open_recs.items()):
+            if key in current:
+                continue
+            if key in self._executed_recs:
+                outcome = "provedeno tlačítkem Provést"
+            elif any(
+                s.endswith(f"({SRC_EXTERNAL})") and s[:5] >= hhmm(rec["since"])
+                for s in day.get("switches", {}).get(rec["id"], [])
+            ):
+                outcome = "vyřešeno mimo integraci (ručně, automatizací nebo zařízením)"
+            else:
+                outcome = "odvoláno – situace se změnila"
+            day.setdefault("recommendations", []).append(
+                {"from": hhmm(rec["since"]), "to": dt_util.now().strftime("%H:%M"),
+                 "text": rec["text"], "outcome": outcome}
+            )
+            del day["recommendations"][:-DAY_LOG_SIZE]
+            del self._open_recs[key]
+            self._executed_recs.discard(key)
+        for key, item in current.items():
+            self._open_recs.setdefault(key, {"id": item["id"], "text": item["text"], "since": item["since"]})
+
+    def open_recommendations(self) -> list[dict[str, str]]:
+        return list(self._open_recs.values())
+
+    def _account(self, grid: float, battery: float, hdo: bool | None, now: float) -> None:
+        """Add this cycle's energy of every device, split by source, and its cost.
+
+        Managed devices are the flexible loads, so grid import and battery
+        discharge are attributed to them first (the house takes solar first):
+        grid = min(import, devices), battery = min(discharge, rest), solar = rest.
+        Grid energy is priced by the tariff in force (NT in HDO, VT otherwise).
+        """
+        last, self._last_accounting = self._last_accounting, now
+        if last is None:
+            return
+        hours = min(now - last, 3 * float(self.conf[CONF_UPDATE_INTERVAL])) / 3600
+        day = self.today()
+        for key, watts in (
+            ("import_kwh", max(grid, 0.0)),
+            ("export_kwh", max(-grid, 0.0)),
+            ("battery_charge_kwh", max(battery, 0.0)),
+            ("battery_discharge_kwh", max(-battery, 0.0)),
+        ):
+            day[key] = day.get(key, 0.0) + watts * hours / 1000
+        powers = {sid: max(d.status.actual_w, 0.0) for sid, d in self.devices.items()}
+        total = sum(powers.values())
+        today = dt_util.now().date().isoformat()
+        grid_w = min(max(grid, 0.0), total)
+        battery_w = min(max(-battery, 0.0), total - grid_w)
+        solar_w = total - grid_w - battery_w
+        price = self._f(CONF_PRICE_NT if hdo else CONF_PRICE_VT)
+        for sid, power in powers.items():
+            stats = self._stats.setdefault(sid, {k: 0.0 for k in STAT_KEYS})
+            if stats.get("day") != today:
+                stats["day"], stats["today"] = today, {k: 0.0 for k in STAT_KEYS}
+            if power <= 0 or total <= 0:
+                continue
+            share = power / total
+            add = {
+                "total": power * hours / 1000,
+                "solar": solar_w * share * hours / 1000,
+                "battery": battery_w * share * hours / 1000,
+                "grid": grid_w * share * hours / 1000,
+            }
+            add["cost"] = add["grid"] * price
+            for key, value in add.items():
+                stats[key] = stats.get(key, 0.0) + value
+                stats["today"][key] = stats["today"].get(key, 0.0) + value
+
+    async def async_run_review(self) -> dict[str, Any]:
+        """Run the AI review now (scheduled or on request) and keep it."""
+        from .review import async_review  # noqa: PLC0415 - avoid an import cycle
+
+        self.review_running = True
+        self.async_update_listeners()
+        try:
+            review = await async_review(self)
+        except Exception as err:
+            self.review_error = str(err)
+            _LOGGER.warning("AI review failed: %s", err)
+            raise
+        finally:
+            self.review_running = False
+        self.review_error = None
+        self.reviews = [review, *self.reviews][:REVIEW_HISTORY]
+        self._save_state()
+        await self.async_request_refresh()
+        return review
+
+    async def async_scheduled_review(self, now: datetime) -> None:
+        """Called every minute: run the review once a day at the configured time."""
+        if not self.conf.get(CONF_AI_TASK_ENTITY) or not self.conf.get(CONF_AI_REVIEW_ENABLED):
+            return
+        at = dt_util.parse_time(str(self.conf.get(CONF_AI_REVIEW_TIME) or ""))
+        local = dt_util.as_local(now)
+        if at is None or (local.hour, local.minute) != (at.hour, at.minute):
+            return
+        if self.reviews and self.reviews[0].get("date") == local.date().isoformat():
+            return
+        try:
+            await self.async_run_review()
+        except Exception:  # noqa: BLE001 - logged in async_run_review
+            pass
+
+    def today(self) -> dict[str, Any]:
+        """Today's overview bucket (reset at local midnight)."""
+        date = dt_util.now().date().isoformat()
+        if self._day.get("date") != date:
+            self._day = {"date": date, "switches": {}, "log": [], "failsafe_s": 0.0}
+        return self._day
+
+    def _track_switching(self) -> None:
+        """Record observed on/off changes per device (for the review)."""
+        day = self.today()
+        now = dt_util.now().strftime("%H:%M")
+        for sid, device in self.devices.items():
+            on = device.state_now().get("on")
+            prev = self._prev_on.get(sid)
+            if prev is not None and on is not None and on != prev:
+                source, at = self._expected.pop(sid, (SRC_EXTERNAL, 0.0))
+                if time.monotonic() - at > 120:
+                    source = SRC_EXTERNAL
+                day["switches"].setdefault(sid, []).append(f"{now} {'on' if on else 'off'} ({source})")
+            self._prev_on[sid] = on
+        if self.dry_run:
+            # How often reality matched the plan (watch-only).
+            match = day.setdefault("plan_match", {})
+            for sid, device in self.devices.items():
+                if device.enabled:
+                    counts = match.setdefault(sid, [0, 0])
+                    counts[1] += 1
+                    counts[0] += 0 if device.pending_actions() else 1
+
+    def device_stats(self, subentry_id: str) -> dict[str, Any]:
+        return self._stats.get(subentry_id, {})
+
+    def _tariff_data(self) -> dict[str, Any]:
+        """Prices and the current / next low-tariff window for the card."""
+        data: dict[str, Any] = {
+            "price_vt": self._f(CONF_PRICE_VT) or None,
+            "price_nt": self._f(CONF_PRICE_NT) or None,
+        }
+        if self.hdo.knows_future and self.hdo.windows:
+            now = dt_util.now()
+            current, upcoming = self.hdo.current_and_next(now)
+            iso = lambda w: [w[0].isoformat(), w[1].isoformat()] if w else None  # noqa: E731
+            data["hdo_window"] = iso(current)
+            data["hdo_next_window"] = iso(upcoming)
+        return data
 
     def _export_unit(self) -> str:
         entity_id = self.conf.get(CONF_EXPORT_LIMIT_ENTITY)
@@ -807,7 +1030,9 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 value = self._f(CONF_EXPORT_LIMIT_RAISED if self._export_raised else CONF_EXPORT_LIMIT_NORMAL)
                 await async_set_number(self.hass, self.conf[CONF_EXPORT_LIMIT_ENTITY], value)
             elif device := self.devices.get(item["id"]):
+                self._expect_switch(device, SRC_RECOMMENDATION)
                 await device.apply()
+            self._executed_recs.add(item["id"] + item["text"])
             _LOGGER.info("Recommendation carried out by hand: %s", item["text"])
             done += 1
         if done:
@@ -818,10 +1043,16 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         if self.dry_run:
             return  # "watch only": decisions are shown, nothing is switched
         for device in active:
+            self._expect_switch(device, SRC_OPTIMIZER)
             try:
                 await device.apply()
             except Exception:  # noqa: BLE001 - one device must not stop the others
                 _LOGGER.exception("Failed to control %s", device.name)
+
+    def _expect_switch(self, device: ManagedDevice, source: str) -> None:
+        """Remember who causes an on/off change that ``apply`` is about to make."""
+        if any(a[0] in ("on", "off", "start", "stop") for a in device.pending_actions()):
+            self._expected[device.subentry_id] = (source, time.monotonic())
 
     async def _async_failsafe(
         self, snap: DispatchSnapshot, active: list[ManagedDevice], now: float
@@ -839,6 +1070,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             )
             self._failsafe_logged = True
         self._update_deadlines(snap, None, 0.0)
+        day = self.today()
+        day["failsafe_s"] = day.get("failsafe_s", 0.0) + float(self.conf[CONF_UPDATE_INTERVAL])
         headroom = self._headroom()
         for device in sorted(active, key=lambda d: (not d.status.urgent, d.priority)):
             device.borrow = False

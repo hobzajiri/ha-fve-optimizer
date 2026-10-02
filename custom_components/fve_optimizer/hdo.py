@@ -425,6 +425,12 @@ class HdoSchedule:
             (max(a, start), min(b, end)) for a, b in self.windows if a < end and b > start
         ]
 
+    def current_and_next(self, now: datetime) -> tuple[Window | None, Window | None]:
+        """(window we are in, next window) – both None when the future is unknown."""
+        current = next((w for w in self.windows if w[0] <= now < w[1]), None)
+        upcoming = next((w for w in self.windows if w[0] > now), None)
+        return current, upcoming
+
     def next_change(self, now: datetime) -> datetime | None:
         for start, end in self.windows:
             if start > now:

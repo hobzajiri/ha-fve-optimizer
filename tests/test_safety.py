@@ -203,3 +203,57 @@ async def test_panel_is_registered(hass: HomeAssistant, hass_client) -> None:
     client = await hass_client()
     resp = await client.get("/fve_optimizer/fve-optimizer-panel.js")
     assert resp.status == 200
+
+
+async def test_decision_log_kept_and_restored(hass: HomeAssistant) -> None:
+    Recorder(hass)
+    _states(hass, grid=-3000, batt=0, soc=95, limit="10000", switch__boiler="off")
+    entry = _entry(TIMEOUT, ("switched", BOILER))
+    coordinator = await _setup(hass, entry)
+    hass.states.async_set("switch.boiler", "on")
+    hass.states.async_set("sensor.grid", "3000")  # big import → boiler off: decision changes
+    await coordinator.async_refresh()
+    log = coordinator.data.live_data["log"]
+    assert len(log) == 2 and log[0]["at"] >= log[1]["at"]
+    await coordinator.async_refresh()  # saves the state incl. the log
+    await coordinator._state_store.async_save(coordinator._saved_state)
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    restored = entry.runtime_data.data.live_data["log"]
+    assert [e["text"] for e in restored[-2:]] == [e["text"] for e in log]
+
+
+async def test_watch_only_decision_is_stable(hass: HomeAssistant, freezer) -> None:
+    """In watch-only the boiler stays off; the decision must not flap with min off time."""
+    Recorder(hass)
+    boiler = {**BOILER, "min_on_time_s": 300, "min_off_time_s": 300}
+    _states(hass, grid=-3000, batt=0, soc=95, limit="10000", switch__boiler="off")
+    coordinator = await _setup(hass, _entry({**TIMEOUT, "dry_run": True}, ("switched", boiler)))
+    reasons = []
+    for _ in range(8):
+        freezer.tick(15)
+        hass.states.async_set("sensor.grid", "-3000", force_update=True)
+        await coordinator.async_refresh()
+        reasons.append(coordinator.data.devices[next(iter(coordinator.devices))]["reason"])
+    assert set(reasons) == {"running"}
+    assert len(coordinator.data.live_data["log"]) == 1
+
+
+async def test_min_on_time_counts_from_real_switch(hass: HomeAssistant, freezer) -> None:
+    rec = Recorder(hass)
+    boiler = {**BOILER, "min_on_time_s": 300, "min_off_time_s": 0}
+    _states(hass, grid=-3000, batt=0, soc=95, limit="10000", switch__boiler="off")
+    coordinator = await _setup(hass, _entry(TIMEOUT, ("switched", boiler)))
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+    await coordinator.async_refresh()  # observes the switch → min on time starts
+    hass.states.async_set("sensor.grid", "3000")  # surplus gone
+    freezer.tick(60)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert ("turn_off", "switch.boiler", None) not in rec.calls
+    assert coordinator.data.devices[next(iter(coordinator.devices))]["reason"] == "min_on_time"
+    freezer.tick(250)
+    hass.states.async_set("sensor.grid", "3001")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert ("turn_off", "switch.boiler", None) in rec.calls

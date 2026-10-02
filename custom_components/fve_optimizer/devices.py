@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import logging
 import math
+import time
 from typing import Any
 
 from homeassistant.const import STATE_ON, STATE_UNAVAILABLE, STATE_UNKNOWN
@@ -294,6 +295,8 @@ class SwitchedDevice(ManagedDevice):
         super().__init__(hass, subentry_id, config)
         self._is_on: bool | None = None
         self._target_on = False
+        # Last *observed* switch (not decision) – minimum on/off times count from it,
+        # so watch-only mode and manual switching behave correctly.
         self._last_change: float = -math.inf
         self._temperature: float | None = None
         self._max_reached = False
@@ -315,7 +318,10 @@ class SwitchedDevice(ManagedDevice):
         return self.config[CONF_SWITCH_ENTITY]
 
     def read(self) -> None:
+        was_on = self._is_on
         self._is_on = state_on(self.hass, self.switch_entity)
+        if was_on is not None and self._is_on is not None and was_on != self._is_on:
+            self._last_change = time.monotonic()
         measured = state_power(self.hass, self.config.get(CONF_POWER_SENSOR))
         if measured is not None:
             self.status.actual_w = max(measured, 0.0)
@@ -550,8 +556,6 @@ class SwitchedDevice(ManagedDevice):
             if now - self._last_change < min_time and blocked is None:
                 target = is_on
                 reason = "min_on_time" if is_on else "min_off_time"
-            else:
-                self._last_change = now
 
         self._target_on = target
         status.active = target

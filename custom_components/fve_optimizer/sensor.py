@@ -12,11 +12,12 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, UnitOfElectricCurrent, UnitOfPower
+from homeassistant.const import PERCENTAGE, UnitOfElectricCurrent, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import FveOptimizerConfigEntry
+from .const import CONF_AI_TASK_ENTITY
 from .coordinator import DispatchSnapshot, FveOptimizerCoordinator
 from .entity import FveDeviceEntity, FveOptimizerEntity
 
@@ -85,6 +86,11 @@ HUB_SENSORS: tuple[HubSensorDescription, ...] = (
         value_fn=lambda s: s.headroom_a,
     ),
     HubSensorDescription(
+        key="ai_review",
+        translation_key="ai_review",
+        value_fn=lambda s: None,  # filled by the sensor class from the coordinator
+    ),
+    HubSensorDescription(
         key="recommendations",
         translation_key="recommendations",
         value_fn=lambda s: len(s.recommendations),
@@ -110,12 +116,17 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(HubSensor(coordinator, d) for d in HUB_SENSORS)
+    async_add_entities(
+        HubSensor(coordinator, d)
+        for d in HUB_SENSORS
+        if d.key != "ai_review" or coordinator.conf.get(CONF_AI_TASK_ENTITY)
+    )
     for subentry_id in coordinator.devices:
         async_add_entities(
             [
                 DeviceAllocatedSensor(coordinator, subentry_id),
                 DeviceReasonSensor(coordinator, subentry_id),
+                *(DeviceStatSensor(coordinator, subentry_id, key) for key in STAT_SENSORS),
             ],
             config_subentry_id=subentry_id,
         )
@@ -132,6 +143,9 @@ class HubSensor(FveOptimizerEntity, SensorEntity):
 
     @property
     def native_value(self) -> Any:
+        if self.entity_description.key == "ai_review":
+            reviews = self.coordinator.reviews
+            return reviews[0]["score"] if reviews else None
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
@@ -142,6 +156,13 @@ class HubSensor(FveOptimizerEntity, SensorEntity):
         snap = self.coordinator.data
         if snap is None:
             return None
+        if self.entity_description.key == "ai_review":
+            latest = self.coordinator.reviews[0] if self.coordinator.reviews else {}
+            return {
+                **{k: latest.get(k) for k in ("date", "at", "summary", "good", "problems", "suggestions", "entity_id")},
+                "history": [{"date": r.get("date"), "score": r.get("score")} for r in self.coordinator.reviews],
+                "error": self.coordinator.review_error,
+            }
         if self.entity_description.key == "recommendations":
             return {"items": snap.recommendations}
         if self.entity_description.key == "last_decision":
@@ -197,3 +218,33 @@ class DeviceReasonSensor(FveDeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         return self.device_data.get("reason")
+
+
+STAT_SENSORS = ("total", "solar", "battery", "grid", "cost")
+
+
+class DeviceStatSensor(FveDeviceEntity, SensorEntity):
+    """Cumulative energy by source / cost of one device (HA builds daily statistics)."""
+
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: FveOptimizerCoordinator, subentry_id: str, key: str) -> None:
+        super().__init__(coordinator, subentry_id, f"{'energy_' if key != 'cost' else ''}{key}")
+        self.stat_key = key
+        if key == "cost":
+            self._attr_device_class = SensorDeviceClass.MONETARY
+            self._attr_state_class = SensorStateClass.TOTAL
+            self._attr_native_unit_of_measurement = "CZK"
+        else:
+            self._attr_device_class = SensorDeviceClass.ENERGY
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+            self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
+    def native_value(self) -> float:
+        return round(self.coordinator.device_stats(self.subentry_id).get(self.stat_key, 0.0), 4)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        today = self.coordinator.device_stats(self.subentry_id).get("today", {})
+        return {"today": round(today.get(self.stat_key, 0.0), 3)}

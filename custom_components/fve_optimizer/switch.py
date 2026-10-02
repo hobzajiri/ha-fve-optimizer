@@ -11,9 +11,9 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 
 from . import FveOptimizerConfigEntry
-from .const import HUB_TUNABLES, Tunable
+from .const import Tunable
 from .coordinator import FveOptimizerCoordinator
-from .entity import FveDeviceEntity, FveOptimizerEntity, device_tunables
+from .entity import FveDeviceEntity, FveOptimizerEntity, device_tunables, hub_tunables
 
 
 async def async_setup_entry(
@@ -25,7 +25,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             MasterSwitch(coordinator),
-            *(HubTunableSwitch(coordinator, t) for t in HUB_TUNABLES if t.kind == "switch"),
+            *(HubTunableSwitch(coordinator, t) for t in hub_tunables(coordinator.conf, "switch")),
         ]
     )
     for subentry_id, subentry in entry.subentries.items():

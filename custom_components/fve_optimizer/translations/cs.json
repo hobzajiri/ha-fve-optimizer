@@ -76,7 +76,10 @@
           "battery_full_soc": "SoC plné baterie",
           "battery_borrow": "Dorovnávat z plné baterie",
           "input_timeout_s": "Časový limit dat",
-          "dry_run": "Jen sledovat"
+          "dry_run": "Jen sledovat",
+          "ai_task_entity": "AI pro denní hodnocení (volitelné)",
+          "ai_review_enabled": "AI hodnocení",
+          "ai_review_time": "Čas AI hodnocení"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -90,7 +93,9 @@
           "battery_full_soc": "Od tohoto SoC se baterie bere jako plná (už neukládá).",
           "battery_borrow": "Když je baterie plná, zařízení se zaokrouhlí na nejbližší krok – auto o 1 A, bojler se zapne už při polovině příkonu. Rozdíl dorovná baterie, místo aby přebytek tekl do sítě. Půjčuje se jen do SoC plné baterie − 5 %, pak se baterie dobije.",
           "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
-          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci."
+          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
+          "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
+          "ai_review_enabled": "Každý den v nastavený čas."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -98,7 +103,13 @@
         "title": "HDO – nízký tarif",
         "description": "Odkud brát časy nízkého tarifu. Použije je dohřev bojleru do termínu (jen v HDO) a diagnostika.",
         "data": {
-          "hdo_source": "Zdroj HDO"
+          "hdo_source": "Zdroj HDO",
+          "price_vt": "Cena VT",
+          "price_nt": "Cena NT"
+        },
+        "data_description": {
+          "price_vt": "Cena za kWh ve vysokém tarifu včetně distribuce (Kč/kWh). Zatím jen pro zobrazení; 0 = nezobrazovat.",
+          "price_nt": "Cena za kWh v nízkém tarifu včetně distribuce (Kč/kWh)."
         }
       },
       "hdo_egd": {
@@ -228,7 +239,10 @@
           "battery_full_soc": "SoC plné baterie",
           "battery_borrow": "Dorovnávat z plné baterie",
           "input_timeout_s": "Časový limit dat",
-          "dry_run": "Jen sledovat"
+          "dry_run": "Jen sledovat",
+          "ai_task_entity": "AI pro denní hodnocení (volitelné)",
+          "ai_review_enabled": "AI hodnocení",
+          "ai_review_time": "Čas AI hodnocení"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -242,7 +256,9 @@
           "battery_full_soc": "Od tohoto SoC se baterie bere jako plná (už neukládá).",
           "battery_borrow": "Když je baterie plná, zařízení se zaokrouhlí na nejbližší krok – auto o 1 A, bojler se zapne už při polovině příkonu. Rozdíl dorovná baterie, místo aby přebytek tekl do sítě. Půjčuje se jen do SoC plné baterie − 5 %, pak se baterie dobije.",
           "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
-          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci."
+          "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
+          "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
+          "ai_review_enabled": "Každý den v nastavený čas."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -250,7 +266,13 @@
         "title": "HDO – nízký tarif",
         "description": "Odkud brát časy nízkého tarifu. Použije je dohřev bojleru do termínu (jen v HDO) a diagnostika.",
         "data": {
-          "hdo_source": "Zdroj HDO"
+          "hdo_source": "Zdroj HDO",
+          "price_vt": "Cena VT",
+          "price_nt": "Cena NT"
+        },
+        "data_description": {
+          "price_vt": "Cena za kWh ve vysokém tarifu včetně distribuce (Kč/kWh). Zatím jen pro zobrazení; 0 = nezobrazovat.",
+          "price_nt": "Cena za kWh v nízkém tarifu včetně distribuce (Kč/kWh)."
         }
       },
       "hdo_egd": {
@@ -579,6 +601,9 @@
       },
       "dry_run": {
         "name": "Jen sledovat"
+      },
+      "ai_review_enabled": {
+        "name": "AI hodnocení"
       }
     },
     "sensor": {
@@ -637,6 +662,24 @@
       },
       "recommendations": {
         "name": "Doporučení"
+      },
+      "device_energy_total": {
+        "name": "Energie"
+      },
+      "device_energy_solar": {
+        "name": "Energie ze slunce"
+      },
+      "device_energy_battery": {
+        "name": "Energie z baterie"
+      },
+      "device_energy_grid": {
+        "name": "Energie ze sítě"
+      },
+      "device_cost": {
+        "name": "Náklady"
+      },
+      "ai_review": {
+        "name": "AI hodnocení"
       }
     },
     "binary_sensor": {
@@ -779,6 +822,12 @@
       },
       "input_timeout_s": {
         "name": "Časový limit dat"
+      },
+      "price_vt": {
+        "name": "Cena VT"
+      },
+      "price_nt": {
+        "name": "Cena NT"
       }
     },
     "select": {
@@ -799,6 +848,14 @@
       },
       "device_ev_deadline_time": {
         "name": "Termín nabití"
+      },
+      "ai_review_time": {
+        "name": "Čas AI hodnocení"
+      }
+    },
+    "button": {
+      "review_now": {
+        "name": "Vyhodnotit nyní"
       }
     }
   },
@@ -812,6 +869,10 @@
           "description": "ID z atributu items entity Doporučení (prázdné = všechna)."
         }
       }
+    },
+    "run_review": {
+      "name": "Spustit AI hodnocení",
+      "description": "Nechá vybranou AI hned vyhodnotit dnešní rozhodnutí."
     }
   }
 }

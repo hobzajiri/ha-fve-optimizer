@@ -8,8 +8,13 @@ from homeassistant.config_entries import ConfigSubentry
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICE_DEFAULTS, DEVICE_TUNABLES, DOMAIN, Tunable
+from .const import DEVICE_DEFAULTS, DEVICE_TUNABLES, DOMAIN, HUB_TUNABLES, Tunable
 from .coordinator import FveOptimizerCoordinator
+
+
+def hub_tunables(conf: dict[str, Any], kind: str) -> list[Tunable]:
+    """Optimizer-wide tunables of one kind (respecting ``requires``)."""
+    return [t for t in HUB_TUNABLES if t.kind == kind and (t.requires is None or conf.get(t.requires))]
 
 
 def device_tunables(subentry: ConfigSubentry, kind: str) -> list[Tunable]:

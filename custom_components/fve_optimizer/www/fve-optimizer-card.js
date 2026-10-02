@@ -1,5 +1,6 @@
 /*
- * FVE Optimizer card – power flow + decision of the FVE Optimizer integration.
+ * FVE Optimizer card – decisions of the FVE Optimizer integration (state,
+ * recommendations, devices, log; optional power flow diagram).
  *
  *   type: custom:fve-optimizer-card
  *   entity: sensor.fve_optimizer_status   # the optimizer "Status" sensor
@@ -16,10 +17,20 @@ const T = {
     forecast: "Predikce", need: "potřeba", breaker: "Jistič", noData: "Čekám na data z FVE Optimizeru…",
     urgent: "termín", minFirst: "před baterií", atRisk: "nestihne", plan: "plán",
     batteryFirst: "Přednost baterie", devicesFirst: "Přednost zařízení",
-    dryRun: "Jen sledování – nic se nespíná", failsafe: "Pojistka – chybí data ze střídače",
+    dryRun: "Jen sledování – povely proveď ručně", failsafe: "Pojistka – chybí data ze střídače",
     recs: "Doporučení", doIt: "Provést", doAll: "Provést vše", since: "od",
     device: "Zařízení", wanted: "Doporučeno", now: "Teď", on: "Zap", off: "Vyp",
     charge: "Nabíjet", noCharge: "Nenabíjet", exportLimit: "Limit přetoku", manual: "proveď ručně",
+    decisions: "Rozhodnutí", planned: "doporučeno",
+    mode: "Režim", auto: "Řídí automaticky", priority: "Priorita", prioBattery: "baterie",
+    prioDevices: "zařízení", tariff: "Tarif", raised: "zvýšený", normal: "běžný", reserve: "rezerva",
+    borrowShort: "dorovnání z baterie", turnOn: "zapnout", turnOff: "vypnout", stop: "zastavit nabíjení",
+    setTo: "nastavit", inProgress: "provádí se", manualHint: "Doporučení proveď ručně",
+    until: "do", then: "pak", price: "Cena", today: "dnes", notControlled: "neřízeno",
+    review: "AI hodnocení", reviewNow: "Vyhodnotit nyní", reviewing: "Vyhodnocuji…", noReview: "Zatím žádné hodnocení.",
+    reviewOff: "AI hodnocení není nastavené – vyber AI Task entitu v nastavení FVE Optimizeru (krok Řízení).",
+    good: "Co fungovalo", problems: "Problémy", suggestions: "Návrhy úprav", watchOnlyDay: "den v režimu Jen sledovat",
+    statsHint: "Spotřeba dnes, náklady za energii ze sítě (NT/VT) a podíl ze slunce",
   },
   en: {
     pv: "PV", grid: "Grid", battery: "Battery", house: "House",
@@ -33,6 +44,16 @@ const T = {
     recs: "Recommendations", doIt: "Do it", doAll: "Do all", since: "since",
     device: "Device", wanted: "Recommended", now: "Now", on: "On", off: "Off",
     charge: "Charge", noCharge: "Don't charge", exportLimit: "Export limit", manual: "do by hand",
+    decisions: "Decisions", planned: "recommended",
+    mode: "Mode", auto: "Automatic control", priority: "Priority", prioBattery: "battery",
+    prioDevices: "devices", tariff: "Tariff", raised: "raised", normal: "normal", reserve: "headroom",
+    borrowShort: "rounding up from battery", turnOn: "turn on", turnOff: "turn off", stop: "stop charging",
+    setTo: "set", inProgress: "in progress", manualHint: "Carry out the recommendations by hand",
+    until: "until", then: "then", price: "Price", today: "today", notControlled: "not controlled",
+    review: "AI review", reviewNow: "Review now", reviewing: "Reviewing…", noReview: "No review yet.",
+    reviewOff: "AI review is not set up – choose an AI Task entity in the FVE Optimizer settings (Control step).",
+    good: "What worked", problems: "Problems", suggestions: "Suggested changes", watchOnlyDay: "watch-only day",
+    statsHint: "Consumption today, cost of grid energy (NT/VT) and solar share",
   },
 };
 
@@ -161,94 +182,170 @@ class FveOptimizerCard extends HTMLElement {
           x.active ? (x.urgent ? cUrg : cDev) : "var(--disabled-text-color, #9e9e9e)", x.name, "")).join("")}
       </svg>`;
 
-    const chip = (text, cls = "") => `<span class="chip ${cls}">${text}</span>`;
-    const chips = [
-      d.dry_run ? chip(t.dryRun, "info") : "",
-      d.reason === "failsafe" ? chip(t.failsafe, "warn") : "",
-      chip(d.battery_priority ? t.batteryFirst : t.devicesFirst, d.battery_priority ? "warn" : "ok"),
-      chip(`${t.surplus} ${fmtW(d.budget_w)} · ${t.allocated} ${fmtW(d.allocated_w)}`),
+    const lang = this._hass?.locale?.language || this._hass?.language || undefined;
+    const tf = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit" });
+    const hhmm = (iso) => (iso ? tf.format(new Date(iso)) : "");
+
+    // --- Tariff: current window, the next one and prices -----------------------
+    const tariffText = () => {
+      const nt = d.hdo === true;
+      const name = d.hdo == null ? "" : nt ? "NT" : "VT";
+      const win = d.hdo_window, next = d.hdo_next_window;
+      let span = "";
+      if (nt && win) span = ` ${t.until} ${hhmm(win[1])}${next ? `, ${t.then} VT ${t.until} ${hhmm(next[0])}` : ""}`;
+      else if (!nt && next) span = ` ${t.until} ${hhmm(next[0])}, ${t.then} NT ${hhmm(next[0])}–${hhmm(next[1])}`;
+      return `${name}${span}`.trim();
+    };
+    const priceText = () => {
+      const nt = d.hdo === true;
+      const cur = d.hdo == null ? null : nt ? d.price_nt : d.price_vt;
+      const other = nt ? d.price_vt : d.price_nt;
+      if (cur) return `${num(cur, 2)} Kč/kWh${other ? ` (${nt ? "VT" : "NT"} ${num(other, 2)})` : ""}`;
+      return `NT ${num(d.price_nt, 2)} / VT ${num(d.price_vt, 2)} Kč/kWh`;
+    };
+
+    // --- Summary: labelled key/value pairs (replaces the old badges) ------------
+    const kv = (label, value, cls = "") => `<div class="k">${label}</div><div class="v ${cls}">${value}</div>`;
+    const unit = d.export_limit_unit ? ` ${d.export_limit_unit}` : "";
+    const summary = [
+      kv(t.mode, d.reason === "failsafe" ? t.failsafe : d.dry_run ? t.dryRun : t.auto,
+        d.reason === "failsafe" ? "warn" : d.dry_run ? "info" : "ok"),
+      kv(t.priority, `${d.battery_priority ? t.prioBattery : t.prioDevices} · ${t.battery.toLowerCase()} ${Math.round(Number(d.battery_soc) || 0)} % (${t.target} ${Math.round(Number(d.battery_target_soc) || 0)} %)`,
+        d.battery_priority ? "warn" : ""),
+      kv(t.surplus, `${fmtW(d.budget_w)} · ${t.allocated} ${fmtW(d.allocated_w)}${d.borrow ? ` · ${t.borrowShort}` : ""}`),
       d.forecast_kwh != null
-        ? chip(`${t.forecast} ${num(d.forecast_kwh)} / ${t.need} ${num(d.forecast_need_kwh)} kWh ${d.forecast_covers ? "✔" : "✘"}`,
-          d.forecast_covers ? "ok" : "warn") : "",
-      chip(d.export_raised ? t.exportRaised : t.exportNormal),
-      d.hdo != null ? chip(d.hdo ? t.nt : t.vt, d.hdo ? "ok" : "") : "",
-      d.borrow ? chip(t.borrow, "info") : "",
-      d.headroom_a != null ? chip(`${t.breaker} ${num(d.headroom_a)} A`, d.headroom_a < 3 ? "warn" : "") : "",
+        ? kv(t.forecast, `${num(d.forecast_kwh)} kWh, ${t.need} ${num(d.forecast_need_kwh)} kWh ${d.forecast_covers ? "✔" : "✘"}`,
+          d.forecast_covers ? "" : "warn") : "",
+      d.hdo != null ? kv(t.tariff, tariffText()) : "",
+      d.price_vt || d.price_nt ? kv(t.price, priceText()) : "",
+      d.headroom_a != null ? kv(t.breaker, `${t.reserve} ${num(d.headroom_a)} A`, d.headroom_a < 3 ? "warn" : "") : "",
     ].join("");
 
-    const rows = devices.map((x) => {
+    // --- Devices with their recommendation --------------------------------------
+    const recs = d.recommendations || [];
+    const recById = Object.fromEntries(recs.map((r) => [r.id, r]));
+    const items = devices.map((x) => {
+      const now = x.now || {};
       const det = [];
-      if (x.active && x.current) det.push(`${x.phases}f · ${x.current} A`);
+      const curA = now.current != null ? Math.round(now.current) : null;
+      if (now.on && curA) det.push(`${now.phases ?? "?"}f · ${curA} A`);
       if (x.temperature != null) det.push(`${num(x.temperature)} °C`);
       if (x.soc != null) det.push(`SoC ${Math.round(x.soc)} %`);
       if (x.plan && x.plan.length) det.push(`${t.plan} ${x.plan.join(", ")}`);
-      const tags = [
-        x.urgent ? `<span class="tag urg">⚡ ${t.urgent}</span>` : "",
-        x.min_first ? `<span class="tag min">⬆ ${t.minFirst}</span>` : "",
-        x.at_risk ? `<span class="tag urg">⚠ ${t.atRisk}</span>` : "",
-      ].join("");
-      return `
-        <div class="row ${x.active ? "on" : ""}">
-          <ha-icon icon="${ICON[x.kind] || "mdi:power-plug"}"></ha-icon>
-          <div class="main">
-            <div class="name">${x.name} <span class="state">${x.state}</span> ${tags}</div>
-            ${det.length ? `<div class="det">${det.join(" · ")}</div>` : ""}
-          </div>
-          <div class="pw">${x.active ? fmtW(x.allocated_w) : "–"}</div>
-        </div>`;
-    }).join("");
-
-    const recs = d.recommendations || [];
-    const recById = Object.fromEntries(recs.map((r) => [r.id, r]));
-    const hhmm = (iso) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
-    const evText = (on, w, a, p) => (on ? `${w != null ? fmtW(w) + " · " : ""}${a ?? "?"} A · ${p ?? "?"}f` : t.noCharge);
-    const tableRows = devices.map((x) => {
-      const now = x.now || {};
-      let wanted, actual;
-      if (x.kind === "ev_charger") {
-        wanted = x.active ? `${t.charge} ${evText(true, x.allocated_w, x.current, x.phases)}` : t.noCharge;
-        actual = now.on ? evText(true, x.actual_w, now.current != null ? Math.round(now.current) : null, now.phases) : t.noCharge;
-      } else {
-        wanted = x.active ? t.on : t.off;
-        actual = now.on == null ? "?" : now.on ? `${t.on}${x.actual_w ? " · " + fmtW(x.actual_w) : ""}` : t.off;
+      const td = x.today || {};
+      const stats = td.total > 0.005
+        ? `${t.today} ${num(td.total, 1)} kWh · ${num(td.cost, 2)} Kč · ☀ ${Math.round((100 * (td.solar || 0)) / td.total)} %`
+        : "";
+      let wanted = "";
+      if (x.pending) {
+        wanted = x.kind === "ev_charger"
+          ? (x.active ? `${t.charge.toLowerCase()} ${fmtW(x.allocated_w)} (${x.current} A · ${x.phases}f)` : t.stop)
+          : (x.active ? `${t.turnOn} (${fmtW(x.allocated_w)})` : t.turnOff);
       }
-      return { id: x.id, name: x.name, wanted, actual, diff: !!x.pending, rec: recById[x.id] };
+      return {
+        id: x.id, icon: ICON[x.kind] || "mdi:power-plug", name: x.name, state: x.state,
+        on: !!now.on, power: fmtW(x.actual_w), det, stats, wanted, rec: recById[x.id],
+        tags: [
+          x.urgent ? `<span class="tag urg">⚡ ${t.urgent}</span>` : "",
+          x.min_first ? `<span class="tag min">⬆ ${t.minFirst}</span>` : "",
+          x.at_risk ? `<span class="tag urg">⚠ ${t.atRisk}</span>` : "",
+        ].join(""),
+      };
     });
-    if (d.export_limit_target != null) {
-      const u = d.export_limit_unit ? ` ${d.export_limit_unit}` : "";
-      const diff = d.export_limit_now == null || Math.abs(d.export_limit_now - d.export_limit_target) >= 0.5;
-      tableRows.push({ id: "export_limit", name: t.exportLimit, wanted: `${d.export_limit_target}${u}`,
-        actual: d.export_limit_now == null ? "?" : `${d.export_limit_now}${u}`, diff, rec: recById.export_limit });
+    // Export limit: always listed (current value), with a recommendation when it should change.
+    if (d.export_limit_now != null || d.export_limit_target != null) {
+      const controlled = d.export_limit_controlled !== false && d.export_limit_target != null;
+      const diff = controlled
+        && (d.export_limit_now == null || Math.abs(d.export_limit_now - d.export_limit_target) >= 0.5);
+      items.push({
+        id: "export_limit", icon: "mdi:transmission-tower-export", name: t.exportLimit,
+        state: controlled ? (d.export_raised ? t.raised : t.normal) : t.notControlled,
+        on: controlled, power: `${d.export_limit_now ?? "?"}${unit}`, det: [], stats: "", tags: "",
+        wanted: diff ? `${t.setTo} ${d.export_limit_target}${unit}` : "", rec: recById.export_limit,
+      });
     }
-    const pendingRecs = tableRows.filter((r) => r.rec);
-    const recBlock = !tableRows.length ? "" : `
-      <div class="recs">
-        <div class="recs-head">${t.recs}${d.dry_run ? ` · ${t.manual}` : ""}
-          ${d.dry_run && pendingRecs.length > 1 ? `<button class="btn all" data-id="">${t.doAll}</button>` : ""}</div>
-        <table class="rtab">
-          <thead><tr><th>${t.device}</th><th>${t.wanted}</th><th>${t.now}</th><th></th></tr></thead>
-          <tbody>${tableRows.map((r) => `
-            <tr class="${r.diff ? "diff" : ""}">
-              <td>${r.name}</td><td class="w">${r.wanted}</td><td class="n">${r.actual}</td>
-              <td class="act">${r.diff
-                ? (d.dry_run && r.rec ? `<button class="btn" data-id="${r.id}" title="${t.since} ${hhmm(r.rec.since)}">${t.doIt}</button>` : "…")
-                : "✔"}</td>
-            </tr>`).join("")}
-          </tbody>
-        </table>
+    const pending = items.filter((i) => i.rec);
+    const rows = `
+      ${d.dry_run && pending.length > 1 ? `<div class="doall"><span>${t.manualHint}</span>
+        <button class="btn all" data-id="">${t.doAll}</button></div>` : ""}
+      ${items.map((i) => `
+        <div class="row ${i.on ? "on" : ""} ${i.wanted ? "pending" : ""}">
+          <ha-icon icon="${i.icon}"></ha-icon>
+          <div class="main">
+            <div class="name">${i.name}${i.state ? ` <span class="state">${i.state}</span>` : ""} ${i.tags}</div>
+            ${i.det.length ? `<div class="det">${i.det.join(" · ")}</div>` : ""}
+            ${i.stats ? `<div class="det stats" title="${t.statsHint}">${i.stats}</div>` : ""}
+            ${i.wanted ? `<div class="want">➜ ${t.planned}: <b>${i.wanted}</b>${!d.dry_run ? ` · ${t.inProgress}` : ""}</div>` : ""}
+          </div>
+          <div class="side">
+            <div class="pw">${i.power}</div>
+            ${d.dry_run && i.rec ? `<button class="btn" data-id="${i.id}" title="${t.since} ${hhmm(i.rec.since)}">${t.doIt}</button>` : ""}
+          </div>
+        </div>`).join("")}`;
+    const logSize = this._config.log === false ? 0 : Number(this._config.log ?? 20);
+    const log = (d.log || []).slice(0, logSize);
+    // Show only what changed against the previous (older) decision.
+    const all = d.log || [];
+    const changed = (i) => {
+      const parts = all[i].text.split(" · ");
+      const older = all[i + 1] ? new Set(all[i + 1].text.split(" · ")) : null;
+      const diff = older ? parts.filter((p) => !older.has(p)) : parts;
+      return (diff.length ? diff : parts).join(" · ");
+    };
+    const esc = (x) => x.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    const logBlock = !log.length ? "" : `
+      <div class="log">
+        <div class="log-head">${t.decisions}</div>
+        ${log.map((l, i) => `<div class="le${i === 0 ? " newest" : ""}" title="${esc(l.text)}"><span class="lt">${hhmm(l.at)}</span><span class="lx">${esc(changed(i))}</span></div>`).join("")}
       </div>`;
-    const time = d.changed_at ? new Date(d.changed_at).toLocaleTimeString() : "";
+    // --- AI review ----------------------------------------------------------------
+    const rv = d.review;
+    const lines = (txt) => (txt || "").split("\n").map((l) => l.replace(/^\s*[-•*]\s*/, "").trim())
+      .filter((l) => l && !/^žádné\.?$|^none\.?$/i.test(l));
+    const list = (title, txt, cls) => {
+      const items = lines(txt);
+      return items.length ? `<div class="rv-sec ${cls}"><div class="rv-h">${title}</div><ul>${items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul></div>` : "";
+    };
+    const scoreCls = (sc) => (sc >= 8 ? "ok" : sc >= 5 ? "mid" : "bad");
+    const history = (d.review_history || []).slice(0, 14).reverse();
+    const reviewBlock = !d.review_enabled ? `<div class="none">${t.reviewOff}</div>` : `
+      <div class="review">
+        <div class="rv-top">
+          ${rv ? `<div class="score ${scoreCls(rv.score)}">${rv.score}<small>/10</small></div>` : ""}
+          <div class="rv-meta">
+            ${rv ? `<div>${new Date(rv.at).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" })}${rv.dry_run ? ` · ${t.watchOnlyDay}` : ""}</div>` : `<div>${t.noReview}</div>`}
+            ${d.review_error ? `<div class="err">${esc(d.review_error)}</div>` : ""}
+          </div>
+          <button class="btn review-now" ${d.review_running ? "disabled" : ""}>${d.review_running ? t.reviewing : t.reviewNow}</button>
+        </div>
+        ${rv ? `<div class="rv-sum">${esc(rv.summary)}</div>
+          ${list(t.good, rv.good, "good")}${list(t.problems, rv.problems, "bad")}${list(t.suggestions, rv.suggestions, "sugg")}` : ""}
+        ${history.length > 1 ? `<div class="rv-hist">${history.map((h) => `<div class="hb ${scoreCls(h.score)}" title="${h.date}: ${h.score}/10" style="height:${8 + h.score * 3}px"></div>`).join("")}</div>` : ""}
+      </div>`;
+    const time = d.changed_at ? new Date(d.changed_at).toLocaleTimeString(lang) : "";
+    // sections: which parts to show (split the card over several columns).
+    // The power flow diagram is optional – Power Flow Card Plus does it better.
+    const show = new Set(this._config.sections || ["summary", "devices", "log"]);
+    if (show.has("chips")) show.add("summary"); // old names
+    if (show.has("recommendations")) show.add("devices");
+    const defaultTitle = show.size === 1 && show.has("log") ? t.decisions
+      : show.size === 1 && show.has("review") ? t.review : "FVE Optimizer";
     root.innerHTML = `
       <ha-card>
-        ${this._config.title !== false ? `<h1 class="title">${this._config.title || "FVE Optimizer"}</h1>` : ""}
-        <div class="headline">${d.headline || ""}</div>
-        ${svg}
-        <div class="chips">${chips}</div>
-        ${recBlock}
-        <div class="rows">${rows}</div>
-        <div class="foot">${time}</div>
+        ${this._config.title !== false ? `<h1 class="title">${this._config.title || defaultTitle}</h1>` : ""}
+        ${show.has("flow") ? `<div class="headline">${d.headline || ""}</div>${svg}` : ""}
+        ${show.has("summary") ? `<div class="summary">${summary}</div>` : ""}
+        ${show.has("devices") ? `<div class="rows">${rows}</div>` : ""}
+        ${show.has("review") ? reviewBlock : ""}
+        ${show.has("log") ? logBlock.replace(`<div class="log-head">${t.decisions}</div>`, show.size === 1 ? "" : `<div class="log-head">${t.decisions}</div>`) : ""}
+        ${show.has("summary") ? `<div class="foot">${time}</div>` : ""}
       </ha-card>${STYLE}`;
-    root.querySelectorAll("button.btn").forEach((b) =>
+    root.querySelector("button.review-now")?.addEventListener("click", (ev) => {
+      ev.currentTarget.disabled = true;
+      ev.currentTarget.textContent = t.reviewing;
+      this._hass.callService("fve_optimizer", "run_review", {});
+    });
+    root.querySelectorAll("button.btn[data-id]").forEach((b) =>
       b.addEventListener("click", (ev) => {
         const id = ev.currentTarget.dataset.id;
         ev.currentTarget.disabled = true;
@@ -311,6 +408,42 @@ const STYLE = `<style>
   .btn.all { background: transparent; color: var(--primary-color, #03a9f4); border: 1px solid var(--primary-color, #03a9f4); }
   .btn:disabled { opacity: .5; cursor: default; }
   .none { font-size: 12px; color: var(--secondary-text-color); }
+  .log { margin-top: 10px; }
+  .log-head { font-size: 13px; color: var(--secondary-text-color); margin-bottom: 2px; }
+  .le { display: flex; gap: 8px; font-size: 12px; padding: 3px 0; border-top: 1px solid var(--divider-color, #ddd); }
+  .le .lt { color: var(--secondary-text-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .le .lx { flex: 1; min-width: 0; }
+  .le.newest .lx { font-weight: 500; }
+  .summary { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; font-size: 13px;
+    margin: 4px 0 12px; }
+  .summary .k { color: var(--secondary-text-color); }
+  .summary .v.ok { color: var(--success-color, #43a047); }
+  .summary .v.warn { color: var(--warning-color, #ff9800); }
+  .summary .v.info { color: var(--info-color, #039be5); }
+  .row.pending { outline: 1px solid var(--warning-color, #ff9800); }
+  .det.stats { opacity: .85; }
+  .want { font-size: 12px; color: var(--warning-color, #ff9800); margin-top: 2px; }
+  .side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .doall { display: flex; justify-content: space-between; align-items: center; font-size: 12px;
+    color: var(--info-color, #039be5); }
+  .review .rv-top { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+  .score { font-size: 32px; font-weight: 500; line-height: 1; }
+  .score small { font-size: 14px; color: var(--secondary-text-color); }
+  .score.ok { color: var(--success-color, #43a047); }
+  .score.mid { color: var(--warning-color, #ff9800); }
+  .score.bad { color: var(--error-color, #db4437); }
+  .rv-meta { flex: 1; font-size: 12px; color: var(--secondary-text-color); }
+  .rv-meta .err { color: var(--error-color, #db4437); }
+  .rv-sum { font-size: 14px; margin-bottom: 8px; }
+  .rv-sec { font-size: 13px; margin-bottom: 6px; }
+  .rv-sec .rv-h { color: var(--secondary-text-color); font-size: 12px; }
+  .rv-sec ul { margin: 2px 0 0; padding-left: 18px; }
+  .rv-sec.sugg li { color: var(--info-color, #039be5); }
+  .rv-hist { display: flex; align-items: flex-end; gap: 3px; height: 42px; margin-top: 8px; }
+  .hb { width: 10px; border-radius: 2px; }
+  .hb.ok { background: var(--success-color, #43a047); }
+  .hb.mid { background: var(--warning-color, #ff9800); }
+  .hb.bad { background: var(--error-color, #db4437); }
   .foot { text-align: right; font-size: 11px; color: var(--secondary-text-color); margin-top: 6px; }
 </style>`;
 

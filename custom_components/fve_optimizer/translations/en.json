@@ -76,7 +76,10 @@
           "battery_full_soc": "Battery full SoC",
           "battery_borrow": "Round up from a full battery",
           "input_timeout_s": "Data timeout",
-          "dry_run": "Watch only"
+          "dry_run": "Watch only",
+          "ai_task_entity": "AI for the daily review (optional)",
+          "ai_review_enabled": "AI review",
+          "ai_review_time": "AI review time"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -90,7 +93,9 @@
           "battery_full_soc": "From this SoC the battery counts as full (stores nothing more).",
           "battery_borrow": "When the battery is full, devices are rounded to the nearest step – the car by 1 A, the boiler starts at half its power. The battery covers the difference instead of exporting. Borrowing stops 5 % below full, then the battery recharges.",
           "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
-          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation."
+          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
+          "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
+          "ai_review_enabled": "Every day at the set time."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -98,7 +103,13 @@
         "title": "HDO – low tariff",
         "description": "Where to get the low-tariff times. Used by boiler deadline heating (HDO only) and diagnostics.",
         "data": {
-          "hdo_source": "HDO source"
+          "hdo_source": "HDO source",
+          "price_vt": "High tariff price",
+          "price_nt": "Low tariff price"
+        },
+        "data_description": {
+          "price_vt": "Price per kWh in the high tariff incl. distribution. Display only for now; 0 = hidden.",
+          "price_nt": "Price per kWh in the low tariff incl. distribution."
         }
       },
       "hdo_egd": {
@@ -228,7 +239,10 @@
           "battery_full_soc": "Battery full SoC",
           "battery_borrow": "Round up from a full battery",
           "input_timeout_s": "Data timeout",
-          "dry_run": "Watch only"
+          "dry_run": "Watch only",
+          "ai_task_entity": "AI for the daily review (optional)",
+          "ai_review_enabled": "AI review",
+          "ai_review_time": "AI review time"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -242,7 +256,9 @@
           "battery_full_soc": "From this SoC the battery counts as full (stores nothing more).",
           "battery_borrow": "When the battery is full, devices are rounded to the nearest step – the car by 1 A, the boiler starts at half its power. The battery covers the difference instead of exporting. Borrowing stops 5 % below full, then the battery recharges.",
           "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
-          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation."
+          "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
+          "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
+          "ai_review_enabled": "Every day at the set time."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -250,7 +266,13 @@
         "title": "HDO – low tariff",
         "description": "Where to get the low-tariff times. Used by boiler deadline heating (HDO only) and diagnostics.",
         "data": {
-          "hdo_source": "HDO source"
+          "hdo_source": "HDO source",
+          "price_vt": "High tariff price",
+          "price_nt": "Low tariff price"
+        },
+        "data_description": {
+          "price_vt": "Price per kWh in the high tariff incl. distribution. Display only for now; 0 = hidden.",
+          "price_nt": "Price per kWh in the low tariff incl. distribution."
         }
       },
       "hdo_egd": {
@@ -579,6 +601,9 @@
       },
       "dry_run": {
         "name": "Watch only"
+      },
+      "ai_review_enabled": {
+        "name": "AI review"
       }
     },
     "sensor": {
@@ -637,6 +662,24 @@
       },
       "recommendations": {
         "name": "Recommendations"
+      },
+      "device_energy_total": {
+        "name": "Energy"
+      },
+      "device_energy_solar": {
+        "name": "Energy from solar"
+      },
+      "device_energy_battery": {
+        "name": "Energy from battery"
+      },
+      "device_energy_grid": {
+        "name": "Energy from grid"
+      },
+      "device_cost": {
+        "name": "Cost"
+      },
+      "ai_review": {
+        "name": "AI review"
       }
     },
     "binary_sensor": {
@@ -779,6 +822,12 @@
       },
       "input_timeout_s": {
         "name": "Data timeout"
+      },
+      "price_vt": {
+        "name": "High tariff price"
+      },
+      "price_nt": {
+        "name": "Low tariff price"
       }
     },
     "select": {
@@ -799,6 +848,14 @@
       },
       "device_ev_deadline_time": {
         "name": "Charging deadline"
+      },
+      "ai_review_time": {
+        "name": "AI review time"
+      }
+    },
+    "button": {
+      "review_now": {
+        "name": "Review now"
       }
     }
   },
@@ -812,6 +869,10 @@
           "description": "ID from the items attribute of the Recommendations entity (empty = all)."
         }
       }
+    },
+    "run_review": {
+      "name": "Run AI review",
+      "description": "Let the selected AI review today's decisions now."
     }
   }
 }

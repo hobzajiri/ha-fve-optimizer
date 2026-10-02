@@ -13,7 +13,7 @@ from homeassistant.util import dt as dt_util
 from . import FveOptimizerConfigEntry
 from .const import Tunable
 from .coordinator import FveOptimizerCoordinator
-from .entity import FveDeviceEntity, device_tunables
+from .entity import FveDeviceEntity, FveOptimizerEntity, device_tunables, hub_tunables
 
 
 async def async_setup_entry(
@@ -22,6 +22,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
+    async_add_entities(HubTime(coordinator, t) for t in hub_tunables(coordinator.conf, "time"))
     for subentry_id, subentry in entry.subentries.items():
         if subentry_id not in coordinator.devices:
             continue
@@ -46,3 +47,22 @@ class DeviceTime(FveDeviceEntity, TimeEntity):
 
     async def async_set_value(self, value: time) -> None:
         self.write_tunable(self.tunable.key, value.strftime("%H:%M:%S"))
+
+
+class HubTime(FveOptimizerEntity, TimeEntity):
+    """Optimizer-wide time of day (e.g. the AI review time)."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: FveOptimizerCoordinator, tunable: Tunable) -> None:
+        super().__init__(coordinator, tunable.key)
+        self.tunable = tunable
+
+    @property
+    def native_value(self) -> time | None:
+        return dt_util.parse_time(str(self.coordinator.conf.get(self.tunable.key) or ""))
+
+    async def async_set_value(self, value: time) -> None:
+        entry = self.coordinator.config_entry
+        options = {**entry.data, **entry.options, self.tunable.key: value.strftime("%H:%M:%S")}
+        self.hass.config_entries.async_update_entry(entry, options=options)

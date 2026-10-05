@@ -507,6 +507,63 @@ async def test_boiler_deadline_heating(hass: HomeAssistant, freezer) -> None:
     assert ("turn_off", "switch.boiler", None) in rec.calls
 
 
+async def test_boiler_deadline_met_today_ignores_drain(hass: HomeAssistant, freezer) -> None:
+    """Once the target was reached today, draining must not reopen at-risk / HDO heat."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    await hass.config.async_set_time_zone("Europe/Prague")
+    prague = ZoneInfo("Europe/Prague")
+    rec = Recorder(hass)
+    boiler = {
+        **BOILER,
+        "temperature_sensor": "sensor.water",
+        "deadline_enabled": True,
+        "deadline_time": "19:00:00",
+        "deadline_temperature": 50.0,
+        "deadline_hdo_only": True,
+        "deadline_earliest": "12:00:00",
+        "tank_volume_l": 160.0,
+        "deadline_safety_factor": 1.2,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**MAIN, "hdo_entity": "binary_sensor.hdo"},
+        subentries_data=[
+            ConfigSubentryData(data=boiler, subentry_type="switched", title="Bojler", unique_id=None)
+        ],
+    )
+    # Already hot mid-day → deadline satisfied for today.
+    freezer.move_to(datetime(2026, 9, 30, 14, 0, tzinfo=prague))
+    _states(
+        hass,
+        grid=500,
+        batt=0,
+        soc=95,
+        switch__boiler="off",
+        sensor__water="55",
+        binary_sensor__hdo="on",
+    )
+    coordinator = await _setup(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+    assert coordinator.data.devices[subentry_id].get("deadline_at_risk") is not True
+    assert coordinator.data.live_data["outlook"]["devices"][0]["mode"] == "deadline_met"
+
+    # Water drawn off late – not enough time left, but the day was already done.
+    del rec.calls[:]
+    freezer.move_to(datetime(2026, 9, 30, 18, 30, tzinfo=prague))
+    hass.states.async_set("sensor.water", "30")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[subentry_id]
+    assert data.get("deadline_at_risk") is not True
+    assert data.get("deadline_mode") == "met"
+    assert data["reason"] != "deadline_heating"
+    assert ("turn_on", "switch.boiler", None) not in rec.calls
+    assert coordinator.data.live_data["outlook"]["devices"][0]["mode"] == "deadline_met"
+    assert coordinator.data.live_data["outlook"]["devices"][0]["at_risk"] is False
+
+
 async def test_boiler_deadline_not_started_after_deadline(hass: HomeAssistant, freezer) -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo

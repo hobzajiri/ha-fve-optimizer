@@ -313,6 +313,9 @@ class SwitchedDevice(ManagedDevice):
         self._last_max_for_hyst: float | None = None
         self._legionella_last: datetime | None = None
         self._deadline_day: object | None = None  # date of an active deadline run
+        # Date when the deadline temperature was already reached today. Draining
+        # afterwards must not reopen deadline heating or "at risk" alerts.
+        self._deadline_met_day: date | None = None
         self._deadline_info: dict[str, Any] = {}
         self._waiting_for_hdo = False
 
@@ -365,6 +368,14 @@ class SwitchedDevice(ManagedDevice):
         if not self.config.get(CONF_DEADLINE_ENABLED):
             return out
         info = self._deadline_info
+        if info.get("deadline_mode") == "met" or self._deadline_met_day == dt_util.now().date():
+            out.update({
+                "mode": "deadline_met",
+                "deadline": info.get("deadline"),
+                "target": self.deadline_temperature,
+                "at_risk": False,
+            })
+            return out
         out.update({
             "mode": "deadline",
             "deadline": info.get("deadline"),
@@ -388,6 +399,9 @@ class SwitchedDevice(ManagedDevice):
             "legionella_last": last.isoformat() if last else None,
             "max_reached": self._max_reached,
             "deadline_day": self._deadline_day.isoformat() if self._deadline_day else None,
+            "deadline_met_day": (
+                self._deadline_met_day.isoformat() if self._deadline_met_day else None
+            ),
         })
         return data
 
@@ -402,6 +416,11 @@ class SwitchedDevice(ManagedDevice):
                 self._deadline_day = date.fromisoformat(value)
             except ValueError:
                 self._deadline_day = None
+        if value := data.get("deadline_met_day"):
+            try:
+                self._deadline_met_day = date.fromisoformat(value)
+            except ValueError:
+                self._deadline_met_day = None
 
     @property
     def legionella_due(self) -> bool:
@@ -453,6 +472,10 @@ class SwitchedDevice(ManagedDevice):
         Once started it keeps heating until the temperature is reached, even
         past the deadline (in HDO mode only while HDO lasts), but never into
         the next day. New runs start only before the deadline.
+
+        Reaching the target temperature counts as the day's deadline done.
+        Later draining (cold refill) does not reopen grid/HDO deadline heating
+        or at-risk notifications – only surplus heating may warm it again.
         """
         self._deadline_info = {}
         self._waiting_for_hdo = False
@@ -481,7 +504,14 @@ class SwitchedDevice(ManagedDevice):
         }
 
         if self._temperature >= target:
+            self._deadline_met_day = now.date()
             self._deadline_day = None
+            self._deadline_info["deadline_mode"] = "met"
+            return False
+        if self._deadline_met_day == now.date():
+            # Already hit the target earlier today (e.g. water was drawn off).
+            self._deadline_day = None
+            self._deadline_info["deadline_mode"] = "met"
             return False
         if grid_kwh <= 0:
             # The sun will do it – no grid heating planned (yet).

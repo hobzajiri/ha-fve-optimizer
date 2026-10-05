@@ -79,7 +79,16 @@
           "dry_run": "Jen sledovat",
           "ai_task_entity": "AI pro denní hodnocení (volitelné)",
           "ai_review_enabled": "AI hodnocení",
-          "ai_review_time": "Čas AI hodnocení"
+          "ai_review_time": "Čas AI hodnocení",
+          "ai_outlook_check": "AI rada při riziku termínu",
+          "notify_service": "Služba notifikací (volitelné)",
+          "persistent_notification": "Trvalé notifikace v HA",
+          "notify_on_review": "Notifikovat po AI hodnocení",
+          "notify_review_max_score": "Notifikovat při známce ≤",
+          "notify_on_failsafe": "Notifikovat při pojistce",
+          "notify_on_at_risk": "Notifikovat při riziku termínu",
+          "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
+          "notify_on_order": "Notifikovat při objednávce EV"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -95,7 +104,16 @@
           "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
           "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
           "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
-          "ai_review_enabled": "Každý den v nastavený čas."
+          "ai_review_enabled": "Každý den v nastavený čas.",
+          "ai_outlook_check": "Když termín bojleru/auta začne nestíhat, stejná AI dá krátkou radu (nejvýš jednou denně na zařízení).",
+          "notify_service": "Služba Home Assistant notify bez domény, např. mobile_app_pixel nebo telegram. Prázdné = jen trvalé notifikace / eventy.",
+          "persistent_notification": "Také vytvořit notifikace v Nastavení → Notifikace.",
+          "notify_on_review": "Po denním AI hodnocení, když je známka nejvýš na prahu nebo jsou návrhy.",
+          "notify_review_max_score": "Notifikovat, když je AI známka tato nebo nižší (návrhy notifikují vždy).",
+          "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
+          "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
+          "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -242,7 +260,16 @@
           "dry_run": "Jen sledovat",
           "ai_task_entity": "AI pro denní hodnocení (volitelné)",
           "ai_review_enabled": "AI hodnocení",
-          "ai_review_time": "Čas AI hodnocení"
+          "ai_review_time": "Čas AI hodnocení",
+          "ai_outlook_check": "AI rada při riziku termínu",
+          "notify_service": "Služba notifikací (volitelné)",
+          "persistent_notification": "Trvalé notifikace v HA",
+          "notify_on_review": "Notifikovat po AI hodnocení",
+          "notify_review_max_score": "Notifikovat při známce ≤",
+          "notify_on_failsafe": "Notifikovat při pojistce",
+          "notify_on_at_risk": "Notifikovat při riziku termínu",
+          "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
+          "notify_on_order": "Notifikovat při objednávce EV"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -258,7 +285,16 @@
           "input_timeout_s": "Když ze střídače (síť, baterie, SoC) déle nepřijdou data, zařízení řízená přebytky se vypnou. Termíny běží dál. 0 = vypnuto.",
           "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
           "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
-          "ai_review_enabled": "Každý den v nastavený čas."
+          "ai_review_enabled": "Každý den v nastavený čas.",
+          "ai_outlook_check": "Když termín bojleru/auta začne nestíhat, stejná AI dá krátkou radu (nejvýš jednou denně na zařízení).",
+          "notify_service": "Služba Home Assistant notify bez domény, např. mobile_app_pixel nebo telegram. Prázdné = jen trvalé notifikace / eventy.",
+          "persistent_notification": "Také vytvořit notifikace v Nastavení → Notifikace.",
+          "notify_on_review": "Po denním AI hodnocení, když je známka nejvýš na prahu nebo jsou návrhy.",
+          "notify_review_max_score": "Notifikovat, když je AI známka tato nebo nižší (návrhy notifikují vždy).",
+          "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
+          "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
+          "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -436,7 +472,8 @@
         "reconfigure_successful": "Zařízení bylo upraveno."
       },
       "error": {
-        "max_below_min": "Maximální proud musí být alespoň minimální."
+        "max_below_min": "Maximální proud musí být alespoň minimální.",
+        "deadline_above_target": "Minimální SoC v termínu nesmí být vyšší než maximální SoC z přebytků."
       }
     },
     "ev_charger": {
@@ -465,6 +502,9 @@
             "on_margin_w": "Rezerva pro zapnutí",
             "off_tolerance_w": "Tolerance před vypnutím",
             "ev_soc_sensor": "SoC auta (volitelné)",
+            "ev_target_soc_entity": "Limit nabití z auta (volitelné)",
+            "ev_target_soc": "Maximální SoC z přebytků",
+            "ev_target_soc_hysteresis": "Dolní hystereze maximálního SoC",
             "ev_deadline_enabled": "Nabít do termínu",
             "ev_deadline_time": "Termín nabití",
             "ev_deadline_soc": "Minimální SoC v termínu",
@@ -480,14 +520,17 @@
             "priority": "Nižší číslo = dostane přebytky dřív.",
             "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
             "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
-            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne možnost „ráno alespoň X %“.",
+            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne maximální SoC z přebytků a možnost „ráno alespoň X %“.",
+            "ev_target_soc": "Pevný strop, když entita limitu není nastavená nebo je nedostupná. Nabíjení se zastaví na této hodnotě (ne nad ní).",
+            "ev_target_soc_hysteresis": "Jen dolní hystereze: po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu. Nahoru se cíl nezvyšuje.",
             "ev_deadline_enabled": "Když přebytky nestačí, auto se dobije do termínu na minimální SoC.",
             "ev_deadline_time": "Např. 07:00 – nejbližší budoucí čas (ráno).",
             "ev_deadline_hdo_only": "Zapnuto: ze sítě jen v nízkém tarifu, v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
             "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
             "ev_charge_efficiency": "0,9 = 10 % ztráty.",
             "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
-            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "ev_target_soc_entity": "Entita limitu nabití z auta (např. MySkoda). Má přednost před pevným číslem."
           }
         },
         "reconfigure": {
@@ -509,6 +552,9 @@
             "on_margin_w": "Rezerva pro zapnutí",
             "off_tolerance_w": "Tolerance před vypnutím",
             "ev_soc_sensor": "SoC auta (volitelné)",
+            "ev_target_soc_entity": "Limit nabití z auta (volitelné)",
+            "ev_target_soc": "Maximální SoC z přebytků",
+            "ev_target_soc_hysteresis": "Dolní hystereze maximálního SoC",
             "ev_deadline_enabled": "Nabít do termínu",
             "ev_deadline_time": "Termín nabití",
             "ev_deadline_soc": "Minimální SoC v termínu",
@@ -524,14 +570,17 @@
             "priority": "Nižší číslo = dostane přebytky dřív.",
             "on_margin_w": "Přebytek musí být o tolik vyšší než příkon, aby se zařízení zapnulo.",
             "off_tolerance_w": "Kolik smí chybět (odběr ze sítě / vybíjení baterie), než se zařízení vypne.",
-            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne možnost „ráno alespoň X %“.",
+            "ev_soc_sensor": "Např. z integrace MySkoda. Zapne maximální SoC z přebytků a možnost „ráno alespoň X %“.",
+            "ev_target_soc": "Pevný strop, když entita limitu není nastavená nebo je nedostupná. Nabíjení se zastaví na této hodnotě (ne nad ní).",
+            "ev_target_soc_hysteresis": "Jen dolní hystereze: po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu. Nahoru se cíl nezvyšuje.",
             "ev_deadline_enabled": "Když přebytky nestačí, auto se dobije do termínu na minimální SoC.",
             "ev_deadline_time": "Např. 07:00 – nejbližší budoucí čas (ráno).",
             "ev_deadline_hdo_only": "Zapnuto: ze sítě jen v nízkém tarifu, v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
             "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
             "ev_charge_efficiency": "0,9 = 10 % ztráty.",
             "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
-            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "ev_target_soc_entity": "Entita limitu nabití z auta (např. MySkoda). Má přednost před pevným číslem."
           }
         }
       },
@@ -539,7 +588,8 @@
         "reconfigure_successful": "Zařízení bylo upraveno."
       },
       "error": {
-        "max_below_min": "Maximální proud musí být alespoň minimální."
+        "max_below_min": "Maximální proud musí být alespoň minimální.",
+        "deadline_above_target": "Minimální SoC v termínu nesmí být vyšší než maximální SoC z přebytků."
       }
     }
   },
@@ -604,11 +654,32 @@
       },
       "ai_review_enabled": {
         "name": "AI hodnocení"
+      },
+      "ai_outlook_check": {
+        "name": "AI rada při riziku termínu"
+      },
+      "persistent_notification": {
+        "name": "Trvalé notifikace"
+      },
+      "notify_on_review": {
+        "name": "Notifikovat po AI hodnocení"
+      },
+      "notify_on_failsafe": {
+        "name": "Notifikovat při pojistce"
+      },
+      "notify_on_at_risk": {
+        "name": "Notifikovat při riziku termínu"
+      },
+      "notify_on_boost": {
+        "name": "Notifikovat při rychlém nabíjení EV"
+      },
+      "notify_on_order": {
+        "name": "Notifikovat při objednávce EV"
       }
     },
     "sensor": {
       "budget": {
-        "name": "Přebytek k rozdělení"
+        "name": "Rozpočet pro zařízení"
       },
       "allocated": {
         "name": "Rozděleno"
@@ -644,6 +715,7 @@
           "unavailable": "Nedostupné",
           "not_connected": "Auto nepřipojeno",
           "temperature_reached": "Nahřáto",
+          "soc_reached": "Nabito",
           "waiting_for_surplus": "Čeká na přebytek",
           "starting": "Spouští se",
           "running": "Běží",
@@ -654,7 +726,9 @@
           "deadline_heating": "Nahřívá do termínu",
           "breaker_limit": "Omezeno jističem",
           "waiting_for_hdo": "Čeká na HDO",
-          "deadline_charging": "Nabíjí do termínu"
+          "deadline_charging": "Nabíjí do termínu",
+          "boost_charging": "Rychlé nabíjení",
+          "hold_until_deadline": "Drží ~80 % do termínu"
         }
       },
       "last_decision": {
@@ -796,6 +870,12 @@
       "battery_reserve_soc": {
         "name": "Rezerva baterie"
       },
+      "device_ev_target_soc": {
+        "name": "Maximální SoC z přebytků"
+      },
+      "device_ev_target_soc_hysteresis": {
+        "name": "Dolní hystereze maximálního SoC"
+      },
       "device_ev_deadline_soc": {
         "name": "Minimální SoC v termínu"
       },
@@ -828,6 +908,9 @@
       },
       "price_nt": {
         "name": "Cena NT"
+      },
+      "notify_review_max_score": {
+        "name": "Notifikovat při AI známce ≤"
       }
     },
     "select": {

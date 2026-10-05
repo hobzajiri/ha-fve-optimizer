@@ -55,6 +55,13 @@ input_number:
     max: 95
     step: 0.1
     unit_of_measurement: "°C"
+  sim_ev_soc:
+    name: "Sim: SoC auta"
+    min: 0
+    max: 100
+    step: 0.1
+    unit_of_measurement: "%"
+    initial: 40
   # --- to, co ovládá integrace -----------------------------------------------
   # V % výkonu střídače (10 kW), stejně jako Growatt.
   sim_export_limit:
@@ -166,6 +173,13 @@ template:
         state_class: measurement
         state: "{{ states('input_number.sim_battery_soc') | float(0) | round(1) }}"
 
+      - name: "Sim EV SoC"
+        unique_id: sim_ev_soc
+        unit_of_measurement: "%"
+        device_class: battery
+        state_class: measurement
+        state: "{{ states('input_number.sim_ev_soc') | float(0) | round(1) }}"
+
       - name: "Sim water temperature"
         unique_id: sim_water_temperature
         unit_of_measurement: "°C"
@@ -222,6 +236,8 @@ automation:
           batt_w: "{{ states('sensor.sim_battery_power') | float(0) }}"
           temp: "{{ states('input_number.sim_water_temp') | float(0) }}"
           boiler_w: "{{ states('sensor.sim_boiler_power') | float(0) }}"
+          ev_soc: "{{ states('input_number.sim_ev_soc') | float(0) }}"
+          ev_w: "{{ states('sensor.sim_ev_power') | float(0) }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.sim_battery_soc
@@ -234,6 +250,12 @@ automation:
         data:
           # 160 l × 1,163 Wh/(l·K); ztráty 0,5 K/h
           value: "{{ ([temp + (boiler_w / (160 * 1.163) - 0.5) * hours, 5] | max) | round(2) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.sim_ev_soc
+        data:
+          # 77 kWh auto, účinnost ~0.9
+          value: "{{ ([[ev_soc + ev_w * hours * 0.9 / 77000 * 100, 0] | max, 100] | min) | round(1) }}"
       # Jako Modbus: hodnoty se hlásí při každém dotazu, i když se nemění
       # (jinak by je pojistka FVE Optimizeru brala jako zamrzlé).
       - action: homeassistant.update_entity
@@ -242,5 +264,6 @@ automation:
             - sensor.sim_grid_power
             - sensor.sim_battery_power
             - sensor.sim_battery_soc
+            - sensor.sim_ev_soc
             - sensor.sim_pv_power
             - sensor.sim_load

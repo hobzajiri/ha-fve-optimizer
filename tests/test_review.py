@@ -25,6 +25,7 @@ def _fake_ai(hass: HomeAssistant, answer: dict | None = None, fail: bool = False
         return {"conversation_id": "x", "data": answer or {
             "score": 7, "summary": "Přebytky využity dobře.", "good": "- bojler ze slunce",
             "problems": "- bojler 6× vypnut", "suggestions": "Bojler – zpoždění vypnutí: z 60 na 180 s – mraky",
+            "outlook": "- Bojler do 19:00 zvládne v NT\n- Auto bez rizika",
         }}
 
     hass.services.async_register("ai_task", "generate_data", generate, supports_response=SupportsResponse.ONLY)
@@ -43,10 +44,12 @@ async def test_review_on_request(hass: HomeAssistant) -> None:
     # The AI got today's data and the structure.
     call = calls[0].data
     assert call["entity_id"] == "ai_task.test"
-    assert set(call["structure"]) == {"score", "summary", "good", "problems", "suggestions"}
+    assert set(call["structure"]) == {"score", "summary", "good", "problems", "suggestions", "outlook"}
     data = json.loads(call["instructions"].split("Data dne:\n", 1)[1])
     assert "Bojler" in data["devices"] and "settings" in data and "decision_log" in data
-    # Sensor + card data.
+    assert "outlook" in data and "forecast" in data["outlook"]
+    assert coordinator.data.live_data["outlook"]["battery"]["soc"] == 95
+    assert review.get("outlook")
     sensor = [s for s in hass.states.async_all("sensor") if "suggestions" in s.attributes][0]
     assert sensor.state == "7"
     assert coordinator.data.live_data["review"]["score"] == 7
@@ -91,6 +94,30 @@ async def test_no_review_entities_without_ai(hass: HomeAssistant) -> None:
     await _setup(hass, _entry({}))
     assert hass.states.async_all("button") == []
     assert not [s for s in hass.states.async_all("sensor") if "suggestions" in s.attributes]
+
+
+async def test_day_outlook_includes_deadline_plan(hass: HomeAssistant, freezer) -> None:
+    await hass.config.async_set_time_zone("Europe/Prague")
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 2, 12, 0, tzinfo=PRAGUE))
+    _states(hass, grid=-500, batt=2000, soc=40, switch__boiler="off", sensor__water="35")
+    boiler = {
+        **BOILER,
+        "temperature_sensor": "sensor.water",
+        "deadline_enabled": True,
+        "deadline_time": "19:00:00",
+        "deadline_temperature": 50.0,
+        "deadline_hdo_only": False,
+        "tank_volume_l": 120,
+    }
+    coordinator = await _setup(hass, _entry({"night_target": False}, ("switched", boiler)))
+    outlook = coordinator.data.live_data["outlook"]
+    assert outlook["battery"]["priority"] is True
+    device = outlook["devices"][0]
+    assert device["name"] == "Bojler"
+    assert device["mode"] == "deadline"
+    assert device["need_kwh"] > 0
+    assert device["deadline_start"] or device["deadline"]
 
 
 async def test_day_overview_counts_switching_and_grid(hass: HomeAssistant, freezer) -> None:

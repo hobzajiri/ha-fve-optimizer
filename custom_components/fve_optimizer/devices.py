@@ -13,7 +13,7 @@ New device types only need a subclass and a subentry flow.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 import logging
 import math
 import time
@@ -45,6 +45,10 @@ from .const import (
     CONF_EV_DEADLINE_TIME,
     CONF_EV_EFFICIENCY,
     CONF_EV_SOC_SENSOR,
+    CONF_EV_TARGET_HYSTERESIS,
+    CONF_EV_TARGET_SOC,
+    CONF_EV_TARGET_SOC_ENTITY,
+    EV_HOLD_SOC,
     CONF_MAX_CURRENT,
     CONF_LEGIONELLA_ENABLED,
     CONF_LEGIONELLA_INTERVAL_DAYS,
@@ -220,7 +224,7 @@ class ManagedDevice:
 
     def persistent(self) -> dict[str, Any]:
         """State that must survive a restart (stored by the coordinator)."""
-        return {}
+        return {"owned": self._owned}
 
     @property
     def minimum_pending(self) -> bool:
@@ -231,6 +235,10 @@ class ManagedDevice:
         """Decide deadline (urgent) mode; return solar kWh the device counts on."""
         self.status.urgent = False
         return 0.0
+
+    def outlook(self) -> dict[str, Any]:
+        """Structured expectation for the rest of today (card + AI review)."""
+        return {"mode": "off" if not self.enabled else "idle"}
 
     def state_now(self) -> dict[str, Any]:
         """Actual state for the recommendation table: on, current, phases."""
@@ -251,6 +259,8 @@ class ManagedDevice:
 
     def restore(self, data: dict[str, Any]) -> None:
         """Take over state saved by :meth:`persistent`."""
+        if "owned" in data:
+            self._owned = bool(data["owned"])
 
     @property
     def name(self) -> str:
@@ -300,6 +310,7 @@ class SwitchedDevice(ManagedDevice):
         self._last_change: float = -math.inf
         self._temperature: float | None = None
         self._max_reached = False
+        self._last_max_for_hyst: float | None = None
         self._legionella_last: datetime | None = None
         self._deadline_day: object | None = None  # date of an active deadline run
         self._deadline_info: dict[str, Any] = {}
@@ -339,13 +350,58 @@ class SwitchedDevice(ManagedDevice):
         self.status.urgent = self._deadline_due(now)
         return self._solar_used
 
+    def outlook(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"mode": "off"}
+        out: dict[str, Any] = {
+            "mode": "surplus",
+            "temperature": self._temperature,
+            "max_temperature": self.max_temperature,
+            "min_before_battery": bool(self.config.get(CONF_MIN_BEFORE_BATTERY)),
+            "minimum_pending": self.minimum_pending,
+            "urgent_now": self.status.urgent,
+            "reason": self.status.reason,
+        }
+        if not self.config.get(CONF_DEADLINE_ENABLED):
+            return out
+        info = self._deadline_info
+        out.update({
+            "mode": "deadline",
+            "deadline": info.get("deadline"),
+            "deadline_start": info.get("deadline_start"),
+            "target": self.deadline_temperature,
+            "deadline_mode": info.get("deadline_mode"),
+            "plan": info.get("deadline_plan"),
+            "need_kwh": info.get("deadline_need_kwh"),
+            "solar_kwh": info.get("deadline_solar_kwh"),
+            "grid_kwh": info.get("deadline_grid_kwh"),
+            "heating_h": info.get("deadline_heating_h"),
+            "at_risk": bool(info.get("deadline_at_risk")),
+            "waiting_for_hdo": self._waiting_for_hdo,
+        })
+        return out
+
     def persistent(self) -> dict[str, Any]:
+        data = super().persistent()
         last = self._legionella_last
-        return {"legionella_last": last.isoformat() if last else None}
+        data.update({
+            "legionella_last": last.isoformat() if last else None,
+            "max_reached": self._max_reached,
+            "deadline_day": self._deadline_day.isoformat() if self._deadline_day else None,
+        })
+        return data
 
     def restore(self, data: dict[str, Any]) -> None:
+        super().restore(data)
         if value := data.get("legionella_last"):
             self._legionella_last = dt_util.parse_datetime(value)
+        if "max_reached" in data:
+            self._max_reached = bool(data["max_reached"])
+        if value := data.get("deadline_day"):
+            try:
+                self._deadline_day = date.fromisoformat(value)
+            except ValueError:
+                self._deadline_day = None
 
     @property
     def legionella_due(self) -> bool:
@@ -501,7 +557,12 @@ class SwitchedDevice(ManagedDevice):
         if self._temperature is not None:
             # Surplus storage limit with hysteresis: after reaching the maximum
             # the boiler waits until the water cools down by the hysteresis.
+            # Raising the max clears the latch when temperature is still below it.
             maximum = self.max_temperature
+            if self._last_max_for_hyst is not None and maximum > self._last_max_for_hyst:
+                if self._temperature < maximum:
+                    self._max_reached = False
+            self._last_max_for_hyst = maximum
             if self._temperature >= maximum:
                 self._max_reached = True
             elif self._temperature <= maximum - self.cfg(CONF_MAX_TEMP_HYSTERESIS):
@@ -550,14 +611,19 @@ class SwitchedDevice(ManagedDevice):
             else:
                 reason = "waiting_for_surplus" if not start_ok else "starting"
 
-        # Minimum on/off times protect contactors and heating elements.
+        # Minimum on/off times protect contactors – but never override a hard stop
+        # (temperature / unavailable) or an urgent breaker shed.
         if target != is_on:
             min_time = self.cfg(CONF_MIN_ON_TIME if is_on else CONF_MIN_OFF_TIME)
-            if now - self._last_change < min_time and blocked is None:
+            hard_stop = blocked is not None or reason == "breaker_limit"
+            if now - self._last_change < min_time and not hard_stop:
                 target = is_on
                 reason = "min_on_time" if is_on else "min_off_time"
 
         self._target_on = target
+        # Ownership is claimed only in ``apply()`` (when we actually switch).
+        # Claiming here would stick in watch-only mode and later ``release()``
+        # could turn off loads the integration never controlled.
         status.active = target
         status.reason = reason
         if not target:
@@ -577,7 +643,11 @@ class SwitchedDevice(ManagedDevice):
         return [("on",) if self._target_on else ("off",)]
 
     async def apply(self) -> None:
-        if self._is_on is None or self._target_on == self._is_on:
+        if self._is_on is None:
+            return
+        if self._target_on:
+            self._owned = True
+        if self._target_on == self._is_on:
             return
         _LOGGER.debug("%s: turning %s", self.name, "on" if self._target_on else "off")
         await async_turn(self.hass, self.switch_entity, self._target_on)
@@ -588,7 +658,6 @@ class SwitchedDevice(ManagedDevice):
             await async_turn(self.hass, self.switch_entity, False)
         self._owned = False
         self.status = DeviceStatus(reason="disabled")
-
 
 class EvChargerDevice(ManagedDevice):
     """Current-regulated EV charger with optional 1/3 phase switching."""
@@ -612,9 +681,19 @@ class EvChargerDevice(ManagedDevice):
         self._up: tuple[float, int] | None = None
         self._down_since: float | None = None
         self._ev_soc: float | None = None
+        self._soc_reached = False
+        self._last_target_for_hyst: float | None = None
+        self._target_soc_entity_last: float | None = None
+        self._deadline_day: date | None = None  # active catch-up day (like boiler)
         self._deadline_active: datetime | None = None  # deadline being charged for
         self._deadline_info: dict[str, Any] = {}
         self._waiting_for_hdo = False
+        # One-shot "charge order": higher SoC by a given datetime (trip / appointment).
+        self._charge_order: dict[str, Any] | None = None
+        # Set when SoC reaches the order target; coordinator consumes for notify/event.
+        self._order_completed: dict[str, Any] | None = None
+        # Fast charge from now: full current until target SoC (ignores surplus/HDO).
+        self._boost: dict[str, Any] | None = None
 
     @property
     def min_a(self) -> int:
@@ -630,6 +709,109 @@ class EvChargerDevice(ManagedDevice):
 
     def _power(self, amps: float, phases: int) -> float:
         return amps * self.voltage * phases
+
+    def persistent(self) -> dict[str, Any]:
+        data = super().persistent()
+        data.update({
+            "soc_reached": self._soc_reached,
+            "deadline_day": self._deadline_day.isoformat() if self._deadline_day else None,
+            "target_soc_entity_last": self._target_soc_entity_last,
+            "charge_order": self._charge_order,
+            "boost": self._boost,
+        })
+        return data
+
+    def restore(self, data: dict[str, Any]) -> None:
+        super().restore(data)
+        if "soc_reached" in data:
+            self._soc_reached = bool(data["soc_reached"])
+        if value := data.get("deadline_day"):
+            try:
+                self._deadline_day = date.fromisoformat(value)
+            except ValueError:
+                self._deadline_day = None
+        if data.get("target_soc_entity_last") is not None:
+            try:
+                self._target_soc_entity_last = float(data["target_soc_entity_last"])
+            except (TypeError, ValueError):
+                self._target_soc_entity_last = None
+        order = data.get("charge_order")
+        if isinstance(order, dict) and order.get("soc") is not None and order.get("deadline"):
+            self._charge_order = {
+                "soc": float(order["soc"]),
+                "deadline": str(order["deadline"]),
+            }
+        else:
+            self._charge_order = None
+        boost = data.get("boost")
+        if isinstance(boost, dict) and boost.get("soc") is not None:
+            self._boost = {"soc": float(boost["soc"])}
+        else:
+            self._boost = None
+
+    def set_charge_order(self, target_soc: float, deadline: datetime) -> dict[str, Any]:
+        """One-shot: charge to ``target_soc`` by ``deadline`` (grid/HDO as needed)."""
+        soc = max(1.0, min(100.0, float(target_soc)))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=dt_util.now().tzinfo)
+        self._boost = None  # order replaces an active boost
+        self._charge_order = {"soc": soc, "deadline": deadline.isoformat()}
+        return dict(self._charge_order)
+
+    def clear_charge_order(self) -> None:
+        self._charge_order = None
+
+    def complete_charge_order(self) -> dict[str, Any] | None:
+        """Clear because the target SoC was reached; queue a completion event."""
+        order = self.charge_order
+        if not order:
+            return None
+        self._charge_order = None
+        self._order_completed = order
+        return order
+
+    def pop_order_completed(self) -> dict[str, Any] | None:
+        """Return and clear a pending auto-completed order (for notify/event)."""
+        event = self._order_completed
+        self._order_completed = None
+        return event
+
+    @property
+    def charge_order(self) -> dict[str, Any] | None:
+        return dict(self._charge_order) if self._charge_order else None
+
+    def start_boost(self, target_soc: float | None = None) -> dict[str, Any]:
+        """Charge at full power from now until ``target_soc`` (default: surplus max)."""
+        if target_soc is None:
+            target_soc = self.target_soc if self._ev_soc is not None else 100.0
+        soc = max(1.0, min(100.0, float(target_soc)))
+        self._charge_order = None  # boost replaces an active order
+        self._boost = {"soc": soc}
+        return dict(self._boost)
+
+    def stop_boost(self) -> None:
+        self._boost = None
+
+    @property
+    def boost(self) -> dict[str, Any] | None:
+        return dict(self._boost) if self._boost else None
+
+    def _boost_eta(self, now: datetime, target: float) -> tuple[float, datetime | None]:
+        """Return (hours_needed, eta) at max charger power, or (0, None) if done."""
+        if self._ev_soc is None:
+            return 0.0, None
+        need_kwh = (
+            max(target - self._ev_soc, 0.0) / 100 * self.cfg(CONF_EV_CAPACITY)
+            / self.cfg(CONF_EV_EFFICIENCY)
+        )
+        if need_kwh <= 0:
+            return 0.0, None
+        phases = 3 if self.can_switch_phases else int(self.config[CONF_PHASES])
+        power_w = self._power(self.max_a, phases)
+        if power_w <= 0:
+            return 0.0, None
+        hours = need_kwh * 1000 / power_w
+        return hours, now + timedelta(hours=hours)
 
     def read(self) -> None:
         self._charging = state_on(self.hass, self.config[CONF_CHARGE_SWITCH])
@@ -652,44 +834,266 @@ class EvChargerDevice(ManagedDevice):
         self._ev_soc = state_float(self.hass, self.config.get(CONF_EV_SOC_SENSOR))
 
     def update_deadline(self, now: datetime) -> float:
+        if self._boost_due(now):
+            self.status.urgent = True
+            return 0.0
         self.status.urgent = self._deadline_due(now)
         return self._solar_used
 
+    def _boost_due(self, now: datetime) -> bool:
+        """Fast charge from now at full power until the boost target SoC."""
+        self._waiting_for_hdo = False
+        self._solar_used = 0.0
+        if not self._boost:
+            return False
+        if self._ev_soc is None or not self._connected:
+            self._deadline_info = {
+                "deadline_source": "boost",
+                "deadline_mode": "boost",
+                "deadline_soc": float(self._boost["soc"]),
+                "boost": self.boost,
+            }
+            return False
+        target = float(self._boost["soc"])
+        if self._ev_soc >= target:
+            self.stop_boost()
+            self._deadline_info = {}
+            return False
+        hours, eta = self._boost_eta(now, target)
+        need_kwh = (
+            max(target - self._ev_soc, 0.0) / 100 * self.cfg(CONF_EV_CAPACITY)
+            / self.cfg(CONF_EV_EFFICIENCY)
+        )
+        self._deadline_info = {
+            "soc": self._ev_soc,
+            "deadline": eta.isoformat() if eta else None,
+            "deadline_eta": eta.isoformat() if eta else None,
+            "deadline_need_kwh": round(need_kwh, 2),
+            "deadline_solar_kwh": 0.0,
+            "deadline_grid_kwh": round(need_kwh, 2),
+            "deadline_charging_h": round(hours, 2),
+            "deadline_soc": target,
+            "deadline_source": "boost",
+            "deadline_mode": "boost",
+            "boost": self.boost,
+        }
+        self._deadline_active = eta
+        return True
+
+    def outlook(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {"mode": "off"}
+        out: dict[str, Any] = {
+            "mode": "surplus",
+            "soc": self._ev_soc,
+            "target_soc": self.target_soc if self._ev_soc is not None else None,
+            "deadline_soc": (
+                self.cfg(CONF_EV_DEADLINE_SOC)
+                if self.config.get(CONF_EV_DEADLINE_ENABLED) else None
+            ),
+            "charge_order": self.charge_order,
+            "boost": self.boost,
+            "connected": self._connected,
+            "min_before_battery": bool(self.config.get(CONF_MIN_BEFORE_BATTERY)),
+            "minimum_pending": self.minimum_pending,
+            "urgent_now": self.status.urgent,
+            "reason": self.status.reason,
+        }
+        info = self._deadline_info
+        if self._boost and self._ev_soc is not None and self._ev_soc < float(self._boost["soc"]):
+            out.update({
+                "mode": "boost",
+                "deadline": info.get("deadline_eta") or info.get("deadline"),
+                "target": float(self._boost["soc"]),
+                "deadline_mode": "boost",
+                "need_kwh": info.get("deadline_need_kwh"),
+                "charging_h": info.get("deadline_charging_h"),
+                "eta": info.get("deadline_eta"),
+                "source": "boost",
+            })
+            return out
+        if self._charge_order and self._ev_soc is not None:
+            order_soc = float(self._charge_order["soc"])
+            if self._ev_soc >= order_soc:
+                out["mode"] = "order_met"
+            else:
+                info = self._deadline_info
+                out.update({
+                    "mode": "deadline",
+                    "deadline": info.get("deadline") or self._charge_order.get("deadline"),
+                    "deadline_start": info.get("deadline_start"),
+                    "target": info.get("deadline_soc", order_soc),
+                    "deadline_mode": info.get("deadline_mode"),
+                    "plan": info.get("deadline_plan"),
+                    "need_kwh": info.get("deadline_need_kwh"),
+                    "solar_kwh": info.get("deadline_solar_kwh"),
+                    "grid_kwh": info.get("deadline_grid_kwh"),
+                    "charging_h": info.get("deadline_charging_h"),
+                    "at_risk": bool(info.get("deadline_at_risk")),
+                    "waiting_for_hdo": self._waiting_for_hdo,
+                    "source": info.get("deadline_source", "order"),
+                })
+                return out
+        if not self.config.get(CONF_EV_DEADLINE_ENABLED) or self._ev_soc is None:
+            return out
+        info = self._deadline_info
+        if not info and self._ev_soc >= self.cfg(CONF_EV_DEADLINE_SOC):
+            out["mode"] = "deadline_met"
+            return out
+        out.update({
+            "mode": "deadline",
+            "deadline": info.get("deadline"),
+            "deadline_start": info.get("deadline_start"),
+            "target": info.get("deadline_soc", self.cfg(CONF_EV_DEADLINE_SOC)),
+            "deadline_mode": info.get("deadline_mode"),
+            "plan": info.get("deadline_plan"),
+            "need_kwh": info.get("deadline_need_kwh"),
+            "solar_kwh": info.get("deadline_solar_kwh"),
+            "grid_kwh": info.get("deadline_grid_kwh"),
+            "charging_h": info.get("deadline_charging_h"),
+            "at_risk": bool(info.get("deadline_at_risk")),
+            "waiting_for_hdo": self._waiting_for_hdo,
+            "source": info.get("deadline_source", "daily"),
+        })
+        return out
+
     @property
     def minimum_pending(self) -> bool:
+        if not bool(self.config.get(CONF_MIN_BEFORE_BATTERY)) or not bool(self._connected):
+            return False
+        if self._ev_soc is None:
+            return False
+        if self._charge_order and self._ev_soc < float(self._charge_order["soc"]):
+            order_soc = float(self._charge_order["soc"])
+            # Top-up above the hold band waits for the deadline window – not surplus.
+            if order_soc > EV_HOLD_SOC and self._ev_soc >= EV_HOLD_SOC:
+                return False
+            return True
+        if self._boost and self._ev_soc < float(self._boost["soc"]):
+            return True
         return (
-            bool(self.config.get(CONF_MIN_BEFORE_BATTERY))
-            and bool(self.config.get(CONF_EV_DEADLINE_ENABLED))
-            and bool(self._connected)
-            and self._ev_soc is not None
+            bool(self.config.get(CONF_EV_DEADLINE_ENABLED))
             and self._ev_soc < self.cfg(CONF_EV_DEADLINE_SOC)
         )
 
-    def _deadline_due(self, now: datetime) -> bool:
-        """Charge to X % by the next HH:MM when surplus is not enough.
+    def _chase_soc(self, final_target: float) -> tuple[float, str]:
+        """SoC to chase now: fill to hold first; 80–100 % only just before deadline.
 
-        Without HDO: starts just in time at full current. HDO only: charges in
-        the latest known HDO windows before the deadline (or in every HDO
-        window when the schedule is unknown). A started run continues until
-        the target or the deadline; then the next deadline is tomorrow.
+        Returns (effective_target, phase) where phase is ``to_hold`` or ``top_up``.
+        """
+        if self._ev_soc is None or final_target <= EV_HOLD_SOC:
+            return final_target, "full"
+        if self._ev_soc < EV_HOLD_SOC:
+            return EV_HOLD_SOC, "to_hold"
+        return final_target, "top_up"
+
+    @property
+    def target_soc(self) -> float:
+        """Max SoC from surplus: car entity when available, else last good / fixed."""
+        entity_id = self.config.get(CONF_EV_TARGET_SOC_ENTITY)
+        from_entity = state_float(self.hass, entity_id) if entity_id else None
+        if from_entity is not None:
+            self._target_soc_entity_last = max(0.0, min(100.0, from_entity))
+            return self._target_soc_entity_last
+        # Brief entity blip: keep the last known car limit instead of jumping to 100 %.
+        if entity_id and self._target_soc_entity_last is not None:
+            return self._target_soc_entity_last
+        return self.cfg(CONF_EV_TARGET_SOC)
+
+    def _blocked(self) -> str | None:
+        """Surplus storage limit with lower hysteresis only.
+
+        Charging stops at the target (never aims above it – the car would refuse
+        anyway) and resumes only after SoC drops by the hysteresis. Raising the
+        target clears the latch when SoC is still below the new limit.
+        """
+        if self._ev_soc is None:
+            return None
+        # With an order above the hold band, do not surplus-charge 80–100 % early.
+        if self._charge_order:
+            order_soc = float(self._charge_order["soc"])
+            if order_soc > EV_HOLD_SOC and self._ev_soc >= EV_HOLD_SOC:
+                return "hold_until_deadline"
+        target = self.target_soc
+        if self._last_target_for_hyst is not None and target > self._last_target_for_hyst:
+            if self._ev_soc < target:
+                self._soc_reached = False
+        self._last_target_for_hyst = target
+        if self._ev_soc >= target:
+            self._soc_reached = True
+        elif self._ev_soc <= target - self.cfg(CONF_EV_TARGET_HYSTERESIS):
+            self._soc_reached = False
+        if self._soc_reached:
+            return "soc_reached"
+        return None
+
+    def _deadline_goals(self, now: datetime) -> list[tuple[datetime, float, str]]:
+        """Unmet (deadline, target_soc, source) goals: daily minimum and/or charge order."""
+        goals: list[tuple[datetime, float, str]] = []
+        if self._charge_order:
+            order_soc = float(self._charge_order["soc"])
+            if self._ev_soc is not None and self._ev_soc >= order_soc:
+                self.complete_charge_order()
+            else:
+                raw = dt_util.parse_datetime(str(self._charge_order["deadline"]))
+                if raw is not None:
+                    if raw.tzinfo is None:
+                        raw = raw.replace(tzinfo=now.tzinfo)
+                    goals.append((raw, order_soc, "order"))
+        if self.config.get(CONF_EV_DEADLINE_ENABLED):
+            deadline_time = dt_util.parse_time(str(self.config[CONF_EV_DEADLINE_TIME]))
+            target = self.cfg(CONF_EV_DEADLINE_SOC)
+            if deadline_time is not None and self._ev_soc is not None and self._ev_soc < target:
+                deadline_today = datetime.combine(now.date(), deadline_time, tzinfo=now.tzinfo)
+                running = self._deadline_day == now.date()
+                deadline = (
+                    deadline_today
+                    if (deadline_today > now or running)
+                    else deadline_today + timedelta(days=1)
+                )
+                goals.append((deadline, target, "daily"))
+        return goals
+
+    def _pick_deadline_goal(
+        self, goals: list[tuple[datetime, float, str]]
+    ) -> tuple[datetime, float, str]:
+        """Drive timing from the earliest unmet goal and that goal's own SoC.
+
+        Never pair a later order's high SoC with an earlier daily deadline
+        (that would top-up to 100 % the night before the morning minimum).
+        """
+        return min(goals, key=lambda g: (g[0], -g[1]))
+
+    def _deadline_due(self, now: datetime) -> bool:
+        """Charge to a target SoC by a deadline when surplus is not enough.
+
+        Goals come from the recurring morning minimum and/or a one-shot charge
+        order. Only one goal is active at a time: the earliest unmet deadline,
+        using that goal's SoC (hold band still applies for targets above 80 %).
+        Without HDO: just in time. HDO only: latest known windows before the
+        deadline. A started run continues until the SoC target – even past the
+        clock (same day for daily; until met for orders).
         """
         self._deadline_info = {}
         self._waiting_for_hdo = False
         self._solar_used = 0.0
-        if (
-            not self.config.get(CONF_EV_DEADLINE_ENABLED)
-            or self._ev_soc is None
-            or not self._connected
-        ):
+        if self._ev_soc is None or not self._connected:
             self._deadline_active = None
+            self._deadline_day = None
             return False
-        deadline_time = dt_util.parse_time(str(self.config[CONF_EV_DEADLINE_TIME]))
-        if deadline_time is None:
+
+        goals = self._deadline_goals(now)
+        if not goals:
+            self._deadline_active = None
+            self._deadline_day = None
             return False
-        deadline = datetime.combine(now.date(), deadline_time, tzinfo=now.tzinfo)
-        if deadline <= now:
-            deadline += timedelta(days=1)
-        target = self.cfg(CONF_EV_DEADLINE_SOC)
+
+        deadline, final_target, source = self._pick_deadline_goal(goals)
+        target, phase = self._chase_soc(final_target)
+        running = self._deadline_day == now.date() or (
+            source == "order" and self._deadline_active is not None and self._ev_soc < final_target
+        )
+
         need_kwh = (
             max(target - self._ev_soc, 0.0) / 100 * self.cfg(CONF_EV_CAPACITY)
             / self.cfg(CONF_EV_EFFICIENCY)
@@ -705,13 +1109,23 @@ class EvChargerDevice(ManagedDevice):
             "deadline_solar_kwh": round(self._solar_used, 2),
             "deadline_grid_kwh": round(grid_kwh, 2),
             "deadline_charging_h": round(hours, 2),
+            "deadline_soc": final_target,
+            "deadline_chase_soc": target,
+            "deadline_phase": phase,
+            "deadline_hold_soc": EV_HOLD_SOC,
+            "deadline_source": source,
+            "charge_order": self.charge_order,
         }
-        if grid_kwh <= 0:
+        if grid_kwh <= 0 and not running:
+            # Waiting for the top-up window (already at hold, solar covers rest, etc.).
+            if phase == "top_up" and self._ev_soc < final_target:
+                self._deadline_info["deadline_mode"] = "hold_until_deadline"
             self._deadline_active = None
+            self._deadline_day = None
             return False
-        running = self._deadline_active == deadline
 
-        if self.config.get(CONF_EV_DEADLINE_HDO_ONLY) and self.hdo_active is not None:
+        hdo_only = bool(self.config.get(CONF_EV_DEADLINE_HDO_ONLY)) and self.hdo_active is not None
+        if hdo_only:
             windows = (
                 self.hdo_schedule.windows_between(now, deadline)
                 if self.hdo_schedule is not None
@@ -724,22 +1138,33 @@ class EvChargerDevice(ManagedDevice):
                     deadline_plan=[f"{a:%d.%m. %H:%M}-{b:%H:%M}" for a, b in plan],
                     deadline_at_risk=not enough,
                 )
-                # Once started, finish the current HDO window.
-                due = any(a <= now < b for a, b in plan) or (running and bool(self.hdo_active))
+                in_plan = any(a <= now < b for a, b in plan)
+                catch_up = running and now >= deadline and bool(self.hdo_active)
+                due = in_plan or catch_up or (running and bool(self.hdo_active))
             else:
                 self._deadline_info["deadline_mode"] = "hdo"
-                due = bool(self.hdo_active)
+                due = bool(self.hdo_active) and (running or now < deadline or self._ev_soc < target)
             if due:
                 self._deadline_active = deadline
+                self._deadline_day = now.date()
             else:
                 self._waiting_for_hdo = True
+                if not running:
+                    self._deadline_day = None
             return due
 
         start = deadline - timedelta(hours=hours) - DEADLINE_LEAD
         self._deadline_info.update(deadline_mode="just_in_time", deadline_start=start.isoformat())
-        if running or now >= start:
+        if running and self._ev_soc < final_target:
             self._deadline_active = deadline
             return True
+        # Just in time for the current chase target (hold first, then top-up).
+        if start <= now and (now < deadline or self._ev_soc < final_target):
+            self._deadline_active = deadline
+            self._deadline_day = now.date()
+            return True
+        self._deadline_active = None
+        self._deadline_day = None
         return False
 
     def _choose_phases(self, budget: float, now: float, charging: bool) -> int:
@@ -770,8 +1195,13 @@ class EvChargerDevice(ManagedDevice):
             blocked = "unavailable"
         elif not self._connected:
             blocked = "not_connected"
-        else:
+        elif status.urgent:
+            # Urgent deadline charging may go past the surplus SoC limit up to
+            # the morning minimum (same idea as boiler ignoring max temp).
             blocked = None
+        else:
+            # Target SoC is a hard stop for surplus – the car will not take more.
+            blocked = self._blocked()
         status.wants_power = blocked is None
 
         if blocked:
@@ -779,7 +1209,7 @@ class EvChargerDevice(ManagedDevice):
             status.active = False
             status.allocated_w = 0.0
             status.reason = blocked
-            status.extra = {"phases": self._phases_now, "current": self._current_a}
+            status.extra = self._extra(self._phases_now, self._current_a)
             return 0.0
 
         self._plan_now = now
@@ -803,7 +1233,7 @@ class EvChargerDevice(ManagedDevice):
             status.reason = "no_surplus" if charging else "waiting_for_surplus"
             if self._waiting_for_hdo and not start_ok:
                 status.reason = "waiting_for_hdo"
-            status.extra = {"phases": phases, "current": self._current_a, **self._deadline_info}
+            status.extra = self._extra(phases, self._current_a)
             self._target_phases = phases
             return 0.0
 
@@ -828,8 +1258,26 @@ class EvChargerDevice(ManagedDevice):
         status.active = True
         status.allocated_w = allocated
         status.reason = "charging" if charging else "starting"
-        status.extra = {"phases": phases, "current": amps, **self._deadline_info}
+        status.extra = self._extra(phases, amps)
         return allocated
+
+    def _extra(self, phases: int, current: float | None) -> dict[str, Any]:
+        entity_id = self.config.get(CONF_EV_TARGET_SOC_ENTITY)
+        source = "entity" if (entity_id and self._target_soc_entity_last is not None
+                              and state_float(self.hass, entity_id) is not None) else (
+            "entity_held" if entity_id and self._target_soc_entity_last is not None else "fixed"
+        )
+        return {
+            "phases": phases,
+            "current": current,
+            **self._deadline_info,
+            "soc": self._ev_soc,
+            "target_soc": self.target_soc if self._ev_soc is not None else None,
+            "target_soc_source": source if self._ev_soc is not None else None,
+            "connected": self._connected,
+            "charge_order": self.charge_order,
+            "boost": self.boost,
+        }
 
     def _damp(self, wanted: int, current: int, budget: float, phases: int, now: float) -> int:
         """Avoid hunting the current on a fluctuating surplus.
@@ -876,7 +1324,7 @@ class EvChargerDevice(ManagedDevice):
             status.active = False
             status.allocated_w = 0.0
             status.reason = "breaker_limit"
-            status.extra = {"phases": phases, "current": self._current_a, **self._deadline_info}
+            status.extra = self._extra(phases, self._current_a)
             return 0.0
         self._target_on = True
         self._target_a = amps
@@ -885,8 +1333,8 @@ class EvChargerDevice(ManagedDevice):
         headroom.consume(allocated - self._power(current_now or 0.0, phases), phases)
         status.active = True
         status.allocated_w = allocated
-        status.reason = "deadline_charging"
-        status.extra = {"phases": phases, "current": amps, **self._deadline_info}
+        status.reason = "boost_charging" if self._boost else "deadline_charging"
+        status.extra = self._extra(phases, amps)
         return allocated
 
     def state_now(self) -> dict[str, Any]:

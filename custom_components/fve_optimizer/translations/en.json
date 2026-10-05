@@ -79,7 +79,16 @@
           "dry_run": "Watch only",
           "ai_task_entity": "AI for the daily review (optional)",
           "ai_review_enabled": "AI review",
-          "ai_review_time": "AI review time"
+          "ai_review_time": "AI review time",
+          "ai_outlook_check": "AI advice when a deadline is at risk",
+          "notify_service": "Notify service (optional)",
+          "persistent_notification": "Persistent HA notifications",
+          "notify_on_review": "Notify on AI review",
+          "notify_review_max_score": "Notify when score ≤",
+          "notify_on_failsafe": "Notify on fail-safe",
+          "notify_on_at_risk": "Notify when a deadline is at risk",
+          "notify_on_boost": "Notify on EV boost",
+          "notify_on_order": "Notify on EV charge order"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -95,7 +104,16 @@
           "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
           "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
           "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
-          "ai_review_enabled": "Every day at the set time."
+          "ai_review_enabled": "Every day at the set time.",
+          "ai_outlook_check": "When a boiler/EV deadline becomes at risk, ask the same AI for a short mid-day tip (at most once per device per day).",
+          "notify_service": "Home Assistant notify service without domain, e.g. mobile_app_pixel or telegram. Leave empty to use only persistent notifications / events.",
+          "persistent_notification": "Also create notifications in Settings → Notifications.",
+          "notify_on_review": "After the daily AI review, when the score is at most the threshold or there are suggestions.",
+          "notify_review_max_score": "Notify if the AI score is this value or lower (suggestions always notify).",
+          "notify_on_failsafe": "When inverter data is lost and when it returns.",
+          "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
+          "notify_on_boost": "When fast EV charging starts or ends.",
+          "notify_on_order": "When an EV charge order is set or cleared."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -242,7 +260,16 @@
           "dry_run": "Watch only",
           "ai_task_entity": "AI for the daily review (optional)",
           "ai_review_enabled": "AI review",
-          "ai_review_time": "AI review time"
+          "ai_review_time": "AI review time",
+          "ai_outlook_check": "AI advice when a deadline is at risk",
+          "notify_service": "Notify service (optional)",
+          "persistent_notification": "Persistent HA notifications",
+          "notify_on_review": "Notify on AI review",
+          "notify_review_max_score": "Notify when score ≤",
+          "notify_on_failsafe": "Notify on fail-safe",
+          "notify_on_at_risk": "Notify when a deadline is at risk",
+          "notify_on_boost": "Notify on EV boost",
+          "notify_on_order": "Notify on EV charge order"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -258,7 +285,16 @@
           "input_timeout_s": "When no inverter data (grid, battery, SoC) arrives for this long, surplus devices are stopped. Deadlines continue. 0 = off.",
           "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
           "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
-          "ai_review_enabled": "Every day at the set time."
+          "ai_review_enabled": "Every day at the set time.",
+          "ai_outlook_check": "When a boiler/EV deadline becomes at risk, ask the same AI for a short mid-day tip (at most once per device per day).",
+          "notify_service": "Home Assistant notify service without domain, e.g. mobile_app_pixel or telegram. Leave empty to use only persistent notifications / events.",
+          "persistent_notification": "Also create notifications in Settings → Notifications.",
+          "notify_on_review": "After the daily AI review, when the score is at most the threshold or there are suggestions.",
+          "notify_review_max_score": "Notify if the AI score is this value or lower (suggestions always notify).",
+          "notify_on_failsafe": "When inverter data is lost and when it returns.",
+          "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
+          "notify_on_boost": "When fast EV charging starts or ends.",
+          "notify_on_order": "When an EV charge order is set or cleared."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -436,7 +472,8 @@
         "reconfigure_successful": "Device updated."
       },
       "error": {
-        "max_below_min": "Maximum current must be at least the minimum."
+        "max_below_min": "Maximum current must be at least the minimum.",
+        "deadline_above_target": "Minimum SoC at deadline must not exceed the maximum surplus SoC."
       }
     },
     "ev_charger": {
@@ -465,6 +502,9 @@
             "on_margin_w": "Turn-on margin",
             "off_tolerance_w": "Turn-off tolerance",
             "ev_soc_sensor": "Car SoC (optional)",
+            "ev_target_soc_entity": "Car charge limit (optional)",
+            "ev_target_soc": "Maximum surplus SoC",
+            "ev_target_soc_hysteresis": "Lower maximum SoC hysteresis",
             "ev_deadline_enabled": "Charge by deadline",
             "ev_deadline_time": "Charging deadline",
             "ev_deadline_soc": "Minimum SoC at deadline",
@@ -480,14 +520,17 @@
             "priority": "Lower number = gets surplus first.",
             "on_margin_w": "Surplus must exceed the power by this much to turn on.",
             "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
-            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables 'at least X % in the morning'.",
+            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables the maximum surplus SoC and 'at least X % in the morning'.",
             "ev_deadline_enabled": "If surplus is not enough, the car is charged to the minimum SoC by the deadline.",
             "ev_deadline_time": "E.g. 07:00 – the next occurrence (morning).",
             "ev_deadline_hdo_only": "On: grid charging only in low tariff, in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
             "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
             "ev_charge_efficiency": "0.9 = 10% losses.",
             "ev_deadline_safety_factor": "1.2 = starts 20% earlier.",
-            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
+            "ev_target_soc": "Fixed ceiling when the charge-limit entity is not set or unavailable. Charging stops at this value (never aims above it).",
+            "ev_target_soc_hysteresis": "Lower hysteresis only: after reaching the maximum, surplus charging resumes only after the SoC drops by this much. The target is never raised above the limit.",
+            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number."
           }
         },
         "reconfigure": {
@@ -509,6 +552,9 @@
             "on_margin_w": "Turn-on margin",
             "off_tolerance_w": "Turn-off tolerance",
             "ev_soc_sensor": "Car SoC (optional)",
+            "ev_target_soc_entity": "Car charge limit (optional)",
+            "ev_target_soc": "Maximum surplus SoC",
+            "ev_target_soc_hysteresis": "Lower maximum SoC hysteresis",
             "ev_deadline_enabled": "Charge by deadline",
             "ev_deadline_time": "Charging deadline",
             "ev_deadline_soc": "Minimum SoC at deadline",
@@ -524,14 +570,17 @@
             "priority": "Lower number = gets surplus first.",
             "on_margin_w": "Surplus must exceed the power by this much to turn on.",
             "off_tolerance_w": "How much may be missing (grid import / battery discharge) before turning off.",
-            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables 'at least X % in the morning'.",
+            "ev_soc_sensor": "E.g. from the MySkoda integration. Enables the maximum surplus SoC and 'at least X % in the morning'.",
             "ev_deadline_enabled": "If surplus is not enough, the car is charged to the minimum SoC by the deadline.",
             "ev_deadline_time": "E.g. 07:00 – the next occurrence (morning).",
             "ev_deadline_hdo_only": "On: grid charging only in low tariff, in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
             "ev_capacity_kwh": "Enyaq 85: 77 kWh.",
             "ev_charge_efficiency": "0.9 = 10% losses.",
             "ev_deadline_safety_factor": "1.2 = starts 20% earlier.",
-            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
+            "ev_target_soc": "Fixed ceiling when the charge-limit entity is not set or unavailable. Charging stops at this value (never aims above it).",
+            "ev_target_soc_hysteresis": "Lower hysteresis only: after reaching the maximum, surplus charging resumes only after the SoC drops by this much. The target is never raised above the limit.",
+            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number."
           }
         }
       },
@@ -539,7 +588,8 @@
         "reconfigure_successful": "Device updated."
       },
       "error": {
-        "max_below_min": "Maximum current must be at least the minimum."
+        "max_below_min": "Maximum current must be at least the minimum.",
+        "deadline_above_target": "Minimum SoC at deadline must not exceed the maximum surplus SoC."
       }
     }
   },
@@ -604,11 +654,32 @@
       },
       "ai_review_enabled": {
         "name": "AI review"
+      },
+      "ai_outlook_check": {
+        "name": "AI advice on deadline risk"
+      },
+      "persistent_notification": {
+        "name": "Persistent notifications"
+      },
+      "notify_on_review": {
+        "name": "Notify on AI review"
+      },
+      "notify_on_failsafe": {
+        "name": "Notify on fail-safe"
+      },
+      "notify_on_at_risk": {
+        "name": "Notify on deadline at risk"
+      },
+      "notify_on_boost": {
+        "name": "Notify on EV boost"
+      },
+      "notify_on_order": {
+        "name": "Notify on EV charge order"
       }
     },
     "sensor": {
       "budget": {
-        "name": "Surplus to distribute"
+        "name": "Budget for devices"
       },
       "allocated": {
         "name": "Allocated"
@@ -644,6 +715,7 @@
           "unavailable": "Unavailable",
           "not_connected": "Car not connected",
           "temperature_reached": "Temperature reached",
+          "soc_reached": "Charged",
           "waiting_for_surplus": "Waiting for surplus",
           "starting": "Starting",
           "running": "Running",
@@ -654,7 +726,9 @@
           "deadline_heating": "Heating for deadline",
           "breaker_limit": "Limited by breaker",
           "waiting_for_hdo": "Waiting for HDO",
-          "deadline_charging": "Charging for deadline"
+          "deadline_charging": "Charging for deadline",
+          "boost_charging": "Fast charging",
+          "hold_until_deadline": "Holding ~80 % until deadline"
         }
       },
       "last_decision": {
@@ -796,6 +870,12 @@
       "battery_reserve_soc": {
         "name": "Battery reserve"
       },
+      "device_ev_target_soc": {
+        "name": "Maximum surplus SoC"
+      },
+      "device_ev_target_soc_hysteresis": {
+        "name": "Lower maximum SoC hysteresis"
+      },
       "device_ev_deadline_soc": {
         "name": "Minimum SoC at deadline"
       },
@@ -828,6 +908,9 @@
       },
       "price_nt": {
         "name": "Low tariff price"
+      },
+      "notify_review_max_score": {
+        "name": "Notify when AI score ≤"
       }
     },
     "select": {

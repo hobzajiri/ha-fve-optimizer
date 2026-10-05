@@ -53,14 +53,21 @@ async def test_unavailable_sensor_holds_then_failsafe(hass: HomeAssistant, freez
     coordinator = await _setup(hass, _entry(TIMEOUT, ("switched", BOILER)))
     hass.states.async_set("sensor.grid", "unavailable")
     await coordinator.async_refresh()
+    # Hold: no new plan from stale data, no decision-log spam.
     assert coordinator.data.reason == "missing_input"
     assert ("turn_off", "switch.boiler", None) not in rec.calls
+    assert not any(
+        "Chybí data" in e.get("text", "") or "Missing inverter" in e.get("text", "")
+        for e in coordinator._decision_log
+    )
 
     freezer.tick(301)
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert coordinator.data.reason == "failsafe"
     assert ("turn_off", "switch.boiler", None) in rec.calls
+    assert coordinator.data.live_data.get("stale") is True
+    assert coordinator.data.live_data.get("recommendations") == []
 
 
 async def test_deadline_continues_in_failsafe(hass: HomeAssistant, freezer) -> None:
@@ -81,6 +88,37 @@ async def test_deadline_continues_in_failsafe(hass: HomeAssistant, freezer) -> N
     assert ("turn_on", "switch.boiler", None) in rec.calls
 
 
+async def test_battery_pair_missing_side_is_zero(hass: HomeAssistant) -> None:
+    """Idle charge/discharge side is often unavailable – must not mean 'no data'."""
+    from homeassistant.config_entries import ConfigSubentryData
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.fve_optimizer.const import DOMAIN
+
+    from .test_dispatcher import MAIN
+
+    data = {**MAIN, **TIMEOUT, "battery_charge_power": "sensor.batt_charge",
+            "battery_discharge_power": "sensor.batt_discharge"}
+    del data["battery_power"]
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=data,
+        subentries_data=[
+            ConfigSubentryData(data=BOILER, subentry_type="switched", title="Bojler", unique_id=None)
+        ],
+    )
+    hass.states.async_set("sensor.grid", "-3000")
+    hass.states.async_set("sensor.soc", "95")
+    hass.states.async_set("sensor.batt_charge", "unavailable")
+    hass.states.async_set("sensor.batt_discharge", "500")
+    hass.states.async_set("switch.boiler", "off")
+    hass.states.async_set("input_number.export_limit", "0")
+    coordinator = await _setup(hass, entry)
+    assert coordinator.data.reason == "dispatching"
+    assert coordinator.data.battery_w == -500.0
+    assert not coordinator.data.stale_inputs
+
+
 async def test_watch_only_switches_nothing(hass: HomeAssistant) -> None:
     rec = Recorder(hass)
     _states(hass, grid=-7000, batt=0, soc=95, switch__boiler="off",
@@ -93,6 +131,32 @@ async def test_watch_only_switches_nothing(hass: HomeAssistant) -> None:
     assert snap.allocated_w > 0  # it still shows what it would do
     assert snap.export_limit_raised  # virtually
     assert snap.decision.startswith("Watch only") or snap.decision.startswith("Jen sledování")
+    # Ownership must not stick in watch-only – release must not turn loads off.
+    for device in coordinator.devices.values():
+        assert device.persistent().get("owned") is not True
+    # Virtual export raise must survive the next refresh (entity stays normal).
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data.export_limit_raised
+    assert rec.calls == []
+
+
+async def test_live_mode_claims_ownership_on_apply(hass: HomeAssistant) -> None:
+    """Applying an on command marks the device owned so release can turn it off."""
+    rec = Recorder(hass)
+    _states(hass, grid=-7000, batt=0, soc=95, switch__boiler="off")
+    coordinator = await _setup(hass, _entry(TIMEOUT, ("switched", BOILER)))
+    device_id = next(iter(coordinator.devices))
+    device = coordinator.devices[device_id]
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+    assert device.persistent().get("owned") is True
+
+
+async def test_device_reason_enum_includes_boost_and_hold() -> None:
+    from custom_components.fve_optimizer.sensor import DEVICE_REASONS
+
+    assert "boost_charging" in DEVICE_REASONS
+    assert "hold_until_deadline" in DEVICE_REASONS
 
 
 async def test_current_damping(hass: HomeAssistant, freezer) -> None:

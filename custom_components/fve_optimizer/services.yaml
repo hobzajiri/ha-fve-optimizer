@@ -6,3 +6,88 @@ execute_recommendation:
       selector:
         text:
 run_review:
+set_ev_charge_order:
+  name: Set EV charge order
+  description: >
+    One-shot charge to a SoC by a deadline (trip / appointment). Uses grid or HDO
+    when surplus is not enough (respects “deadline charging only in HDO”).
+    Cleared automatically when the SoC is reached.
+  fields:
+    target_soc:
+      name: Target SoC
+      description: Charge at least to this SoC (can be above the daily morning minimum).
+      required: true
+      example: 90
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    deadline:
+      name: Deadline
+      description: Date and time when the car should be ready.
+      required: true
+      example: "2026-10-06 07:00:00"
+      selector:
+        datetime:
+    name:
+      name: Charger name
+      description: Optional. Required only when several EV chargers are configured.
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      description: Optional subentry id of the EV charger.
+      selector:
+        text:
+clear_ev_charge_order:
+  name: Clear EV charge order
+  description: Cancel the active one-shot EV charge order.
+  fields:
+    name:
+      name: Charger name
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
+start_ev_boost:
+  name: Start EV fast charge
+  description: >
+    Charge at full power from now until the target SoC (default: surplus / car
+    limit). Ignores surplus and HDO. Response includes estimated finish time.
+  fields:
+    target_soc:
+      name: Target SoC
+      description: Optional. Defaults to the car charge limit / maximum surplus SoC.
+      example: 80
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    name:
+      name: Charger name
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
+stop_ev_boost:
+  name: Stop EV fast charge
+  description: Stop fast charging and return to normal surplus / deadline control.
+  fields:
+    name:
+      name: Charger name
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:

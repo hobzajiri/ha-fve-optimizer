@@ -52,13 +52,32 @@ bude výroby dost, cíl se ještě sníží na **Cílové SoC při dostatečné 
 Když výroba nestačí, baterie se večer stejně vybije. Bojler a auto proto smí
 v HDO brát i z baterie.
 
-### Auto: ráno alespoň X %
+### Auto: maximální SoC a ráno alespoň X %
 
-S **SoC auta** (např. z integrace MySkoda) přibude **Nabít do termínu**:
-**Termín nabití** (07:00), **Minimální SoC v termínu**, **Kapacita baterie
-auta**, **Účinnost nabíjení** a **Dobíjet do termínu jen v HDO**.
+S **SoC auta** (např. z integrace MySkoda) má nabíječka dvě nezávislá SoC,
+stejně jako bojler dvě teploty:
 
-* Přes den se nabíjí z přebytků jako dosud.
+* **Maximální SoC z přebytků**: do něj se auto nabíjí z přebytků. Buď
+  **entita limitu nabití z auta** (např. MySkoda), nebo pevné číslo
+  (záloha, když entita ještě nikdy nebyla dostupná). Krátký výpadek entity
+  drží poslední známý limit (neskočí na 100 %). Po dosažení maxima se znovu
+  zapne až po poklesu o **dolní hysterezi** – nahoru se cíl nezvyšuje
+  (auto by vyšší limit stejně nepřijalo); když se limit **zvedne**, hystereze
+  se uvolní. Ranní termín smí jet i nad surplus maximum až do minimálního SoC.
+* **Minimální SoC v termínu** (např. 60 % do 07:00): garantované minimum, viz níže.
+
+**Objednávka nabití**: na kartě u nabíječky (Cíl % + termín → Objednat), nebo
+služba `fve_optimizer.set_ev_charge_order`. Respektuje HDO. **Do 80 %** se
+dobíjí dřív (přebytek / NT okna); **80–100 %** až těsně před termínem.
+Zrušení na kartě nebo `clear_ev_charge_order`.
+
+**Rychlé nabíjení**: tlačítko na kartě / `start_ev_boost` — od teď naplno
+(bez HDO), s odhadem času. Stop na kartě nebo `stop_ev_boost`.
+
+S **Nabít do termínu** přibude **Termín nabití**, **Minimální SoC v termínu**,
+**Kapacita baterie auta**, **Účinnost nabíjení** a **Dobíjet do termínu jen v HDO**.
+
+* Přes den se nabíjí z přebytků do maximálního SoC.
 * Když přebytky nestačí, dobije se na plný proud:
   * **jen v HDO**: v nejpozdějších oknech HDO před termínem, která stačí,
   * **kdykoli**: těsně před termínem.
@@ -125,10 +144,13 @@ sections: [summary, devices, log]   # výchozí; + flow = schéma toků
 ### Bezpečnost
 
 * **Pojistka při výpadku dat:** když síť, baterie nebo SoC ze střídače
-  nedostupné déle než **Časový limit dat** (5 min), nebo se déle nehlásí
-  (zamrzlé), zařízení řízená přebytky se vypnou přes svá zpoždění a minimální
-  doby. Termíny (bojler, auto ráno) běží dál, limit přetoku zůstane. Stav
-  „Pojistka – chybí data“, varování v logu.
+  nedostupné déle než **Časový limit dat** (5 min), nebo se *všechny*
+  kritické vstupy déle nehlásí (zamrzlé), zařízení řízená přebytky se vypnou
+  přes svá zpoždění a minimální doby. Krátký výpadek nebo zápis jen při změně
+  stavu (typické u střídačů) pojistku nespustí – páry import/export a
+  nabíjení/vybíjení platí, když je dostupná aspoň jedna strana, a krátkou
+  mezeru překlene poslední dobrá hodnota. Termíny (bojler, auto ráno) běží
+  dál, limit přetoku zůstane. Stav „Pojistka – chybí data“, varování v logu.
 * **Tlumení proudu auta:** vyšší proud až po 30 s stabilního přebytku, malý
   pokles (do tolerance před vypnutím) po zpoždění vypnutí, velký pokles hned.
 * **Jen sledovat:** přepínač, kdy integrace počítá, loguje a zobrazuje, ale nic
@@ -156,14 +178,41 @@ a statistiku, o rozhodování neovlivňují.
 
 Volitelně každý den (výchozí 21:00) nebo tlačítkem **Vyhodnotit nyní** pošle
 FVE Optimizer podklady dne (spotřeba a náklady zařízení, odběr/přetok, spínání,
-pojistka, log rozhodnutí, nastavení) libovolné **AI Task** entitě v HA – Google
-Gemini, Anthropic Claude, OpenAI, Ollama… AI vrátí známku 1–10, shrnutí, co
-fungovalo, problémy a **návrhy úprav nastavení**. Sama nic nemění.
+pojistka, log rozhodnutí, nastavení, předpoklad zbytku dne) libovolné **AI Task**
+entitě v HA – Google Gemini, Anthropic Claude, OpenAI, Ollama… AI vrátí známku
+1–10, shrnutí, co fungovalo, problémy a **návrhy úprav nastavení**. Sama nic
+nemění.
 
 * Nastavení: integrace → **Konfigurovat** → krok Řízení → **AI pro denní hodnocení**.
 * Výsledek: entita *AI hodnocení* (známka, text v atributech), panel → záložka
   **Hodnocení** (poslední hodnocení a historie 14 dní), služba
   `fve_optimizer.run_review`.
+* Po hodnocení se vždy vypálí event `fve_optimizer_review_done` (score, summary,
+  suggestions…). Volitelně notifikace při nízké známce / návrzích.
+* **AI rada při riziku termínu**: když bojler/auto začne nestíhat (`at_risk`),
+  stejná AI jednou denně na zařízení navrhne krátkou radu
+  (event `fve_optimizer_outlook_check` + notifikace).
+
+### Notifikace a eventy
+
+V kroku Řízení (a jako entity) nastavíš:
+
+* **Služba notifikací** – např. `mobile_app_pixel` nebo `telegram` (doména
+  `notify.` se doplní). Prázdné = jen trvalé notifikace / eventy.
+* **Trvalé notifikace v HA** – Nastavení → Notifikace.
+* Přepínače: hodnocení, pojistka, riziko termínu, boost EV, objednávka EV;
+  práh známky pro notifikaci po review.
+
+Doménové eventy (vždy, i bez notify služby) – vhodné do automatizací:
+
+| Event | Kdy |
+| --- | --- |
+| `fve_optimizer_review_done` | po AI hodnocení |
+| `fve_optimizer_outlook_check` | AI rada při at_risk |
+| `fve_optimizer_failsafe` / `_failsafe_cleared` | vstup / návrat z pojistky |
+| `fve_optimizer_deadline_risk` | zařízení začne nestíhat termín |
+| `fve_optimizer_boost` | start / konec rychlého nabíjení |
+| `fve_optimizer_charge_order` | nastavení / zrušení / splnění objednávky |
 
 ### Priority
 
@@ -257,7 +306,7 @@ okna na dnešek a zítřek, příští změnu a případnou chybu.
 ## Entity
 
 * `switch.fve_optimizer_optimization`: hlavní vypínač
-* `sensor.fve_optimizer_surplus_to_distribute`, `…_allocated`, `…_managed_consumption`
+* `sensor.fve_optimizer_budget` (rozpočet pro zařízení, ne přetok), `…_allocated`, `…_managed`
 * `sensor.fve_optimizer_battery_target_soc`, `…_breaker_headroom`, `…_status`
 * `binary_sensor.fve_optimizer_battery_priority`, `…_forecast_covers_battery`, `…_export_limit_raised`
 * pro každé zařízení: `switch.<zařízení>_control`, `sensor.<zařízení>_allocated_power`,
@@ -279,7 +328,15 @@ Zkopíruj `custom_components/fve_optimizer` do `config/custom_components/`
 
 ## Vývoj
 
+Testy potřebují **Python 3.14** (stejně jako CI / Home Assistant 2026.9).
+Systémové `python3` na macOS je často 3.12 — ten balíček
+`pytest-homeassistant-custom-component` neinstaluje.
+
 ```bash
-pip install pytest-homeassistant-custom-component
-pytest
+# jednou: venv z Homebrew Python 3.14
+/opt/homebrew/opt/python@3.14/bin/python3 -m venv .venv
+.venv/bin/pip install -r requirements_test.txt
+
+# pak vždy
+.venv/bin/pytest -q
 ```

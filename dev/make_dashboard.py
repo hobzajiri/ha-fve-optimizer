@@ -74,6 +74,7 @@ simulator = {
         {"type": "section", "label": "Stav"},
         "input_number.sim_battery_soc",
         "input_number.sim_water_temp",
+        "input_number.sim_ev_soc",
         "input_boolean.sim_ev_connected",
         "input_boolean.sim_hdo",
         {"type": "section", "label": "Čas"},

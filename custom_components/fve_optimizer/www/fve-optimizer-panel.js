@@ -28,6 +28,7 @@ const L = {
 };
 
 const timeout = (ms) => new Promise((resolve) => setTimeout(() => resolve("timeout"), ms));
+const PANEL_INSTANCES = (window.__fveOptimizerPanels = window.__fveOptimizerPanels || new Set());
 
 /*
  * window.loadCardHelpers exists only after the frontend loaded Lovelace (any
@@ -62,7 +63,16 @@ async function loadHelpers(hass) {
 }
 
 class FveOptimizerPanel extends HTMLElement {
+  connectedCallback() {
+    PANEL_INSTANCES.add(this);
+  }
+
+  disconnectedCallback() {
+    PANEL_INSTANCES.delete(this);
+  }
+
   set hass(hass) {
+    if (!hass) return;
     this._hass = hass;
     if (!this._building && !this._cards) this._build();
     (this._cards || []).forEach((c) => (c.hass = hass));
@@ -264,4 +274,18 @@ const PANEL_STYLE = `<style>
     border: 1px solid var(--primary-color); background: none; color: var(--primary-color); }
 </style>`;
 
-customElements.define("fve-optimizer-panel", FveOptimizerPanel);
+const PANEL_TAG = "fve-optimizer-panel";
+const PrevPanel = customElements.get(PANEL_TAG);
+if (!PrevPanel) {
+  customElements.define(PANEL_TAG, FveOptimizerPanel);
+} else {
+  for (const key of Object.getOwnPropertyNames(FveOptimizerPanel.prototype)) {
+    if (key === "constructor") continue;
+    const desc = Object.getOwnPropertyDescriptor(FveOptimizerPanel.prototype, key);
+    if (desc) Object.defineProperty(PrevPanel.prototype, key, desc);
+  }
+  for (const el of PANEL_INSTANCES) {
+    el._cards = null;
+    if (el._hass) el.hass = el._hass;
+  }
+}

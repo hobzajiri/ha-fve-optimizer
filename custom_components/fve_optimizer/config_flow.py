@@ -69,9 +69,21 @@ from .const import (
     CONF_EV_DEADLINE_TIME,
     CONF_EV_EFFICIENCY,
     CONF_EV_SOC_SENSOR,
+    CONF_EV_TARGET_HYSTERESIS,
+    CONF_EV_TARGET_SOC,
+    CONF_EV_TARGET_SOC_ENTITY,
+    CONF_AI_OUTLOOK_CHECK,
     CONF_AI_REVIEW_ENABLED,
     CONF_AI_REVIEW_TIME,
     CONF_AI_TASK_ENTITY,
+    CONF_NOTIFY_ON_AT_RISK,
+    CONF_NOTIFY_ON_BOOST,
+    CONF_NOTIFY_ON_FAILSAFE,
+    CONF_NOTIFY_ON_ORDER,
+    CONF_NOTIFY_ON_REVIEW,
+    CONF_NOTIFY_REVIEW_MAX_SCORE,
+    CONF_NOTIFY_SERVICE,
+    CONF_PERSISTENT_NOTIFICATION,
     CONF_BATTERY_BORROW,
     CONF_BATTERY_FULL_SOC,
     CONF_EXPORT_CONTROL,
@@ -237,6 +249,18 @@ def _control_schema(v: dict[str, Any]) -> vol.Schema:
             _opt(CONF_AI_TASK_ENTITY, v): _entity("ai_task"),
             _req(CONF_AI_REVIEW_ENABLED, v, DEFAULTS): selector.BooleanSelector(),
             _req(CONF_AI_REVIEW_TIME, v, DEFAULTS): selector.TimeSelector(),
+            _req(CONF_AI_OUTLOOK_CHECK, v, DEFAULTS): selector.BooleanSelector(),
+            # Notifications: notify.* service name + which events to push
+            _opt(CONF_NOTIFY_SERVICE, v): selector.TextSelector(),
+            _req(CONF_PERSISTENT_NOTIFICATION, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_NOTIFY_ON_REVIEW, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_NOTIFY_REVIEW_MAX_SCORE, v, DEFAULTS): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=1, max=10, step=1, mode=selector.NumberSelectorMode.BOX)
+            ),
+            _req(CONF_NOTIFY_ON_FAILSAFE, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_NOTIFY_ON_AT_RISK, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_NOTIFY_ON_BOOST, v, DEFAULTS): selector.BooleanSelector(),
+            _req(CONF_NOTIFY_ON_ORDER, v, DEFAULTS): selector.BooleanSelector(),
         }
     )
 
@@ -538,6 +562,7 @@ class FveOptimizerOptionsFlow(_HdoSteps, OptionsFlow):
             CONF_EXPORT_LIMIT_ENTITY,
             CONF_PHASE_CURRENTS,
             CONF_AI_TASK_ENTITY,
+            CONF_NOTIFY_SERVICE,
             *HDO_KEYS,
         ):
             if key not in self._data:
@@ -634,8 +659,11 @@ def _ev_schema(v: dict[str, Any]) -> vol.Schema:
             _req(CONF_MAX_CURRENT, v, DEVICE_DEFAULTS): _tunable(CONF_MAX_CURRENT),
             _req(CONF_PHASE_SWITCH_INTERVAL, v, DEVICE_DEFAULTS): _tunable(CONF_PHASE_SWITCH_INTERVAL),
             **_common_device_fields(v),
-            # "At least X % by the morning" – used only with the car SoC sensor.
+            # SoC limits / "at least X % by the morning" – used only with the car SoC sensor.
             _opt(CONF_EV_SOC_SENSOR, v): _entity("sensor"),
+            _opt(CONF_EV_TARGET_SOC_ENTITY, v): _entity(["number", "sensor", "input_number"]),
+            _req(CONF_EV_TARGET_SOC, v, DEVICE_DEFAULTS): _tunable(CONF_EV_TARGET_SOC),
+            _req(CONF_EV_TARGET_HYSTERESIS, v, DEVICE_DEFAULTS): _tunable(CONF_EV_TARGET_HYSTERESIS),
             _req(CONF_EV_DEADLINE_ENABLED, v, DEVICE_DEFAULTS): selector.BooleanSelector(),
             _req(CONF_EV_DEADLINE_TIME, v, DEVICE_DEFAULTS): selector.TimeSelector(),
             _req(CONF_EV_DEADLINE_SOC, v, DEVICE_DEFAULTS): _tunable(CONF_EV_DEADLINE_SOC),
@@ -701,4 +729,13 @@ class EvChargerFlow(_DeviceFlow):
     def _validate(self, user_input: dict[str, Any]) -> dict[str, str]:
         if user_input[CONF_MIN_CURRENT] > user_input[CONF_MAX_CURRENT]:
             return {CONF_MAX_CURRENT: "max_below_min"}
+        if (
+            user_input.get(CONF_EV_DEADLINE_ENABLED)
+            and user_input.get(CONF_EV_DEADLINE_SOC) is not None
+            and user_input.get(CONF_EV_TARGET_SOC) is not None
+            and float(user_input[CONF_EV_DEADLINE_SOC]) > float(user_input[CONF_EV_TARGET_SOC])
+            and not user_input.get(CONF_EV_TARGET_SOC_ENTITY)
+        ):
+            # Without a car entity the fixed surplus max must cover the morning min.
+            return {CONF_EV_DEADLINE_SOC: "deadline_above_target"}
         return {}

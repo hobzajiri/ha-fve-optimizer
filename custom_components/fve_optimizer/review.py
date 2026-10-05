@@ -38,6 +38,11 @@ večer, minimální SoC auta ráno) a nízkého tarifu HDO. Cíle, v tomto pořa
 Data dne jsou v JSON níže: nastavení (názvy parametrů tak, jak je uživatel vidí),
 spotřeba a náklady zařízení podle zdroje, odběr a přetok, spínání zařízení s časy,
 doba pojistky (chybějící data ze střídače) a log rozhodnutí (jen změny).
+Klíč „outlook“ je předpoklad zbytku dne spočítaný integrací (ne AI): predikce vs.
+potřeba baterie, přednost baterie, u každého zařízení termín / NT okna / kolik kWh
+ze slunce vs. ze sítě / riziko nestíhání. Ber ho jako faktický plán – hodnotíš, jestli
+dává smysl a co změnit v nastavení, ať se termíny stihnou levněji.
+
 Režim „dry_run“ znamená, že integrace jen sledovala a nic nespínala – pak hodnoť
 hlavně kvalitu doporučení: dávala by smysl a co by se stalo, kdyby se provedla?
 
@@ -48,6 +53,17 @@ zásahy: byly v souladu s doporučeními, nebo naopak ukazují, co integrace př
 (např. uživatel zapnul bojler, ale integrace ho nedoporučila)? „recommendations“
 ukazuje doporučení dne a jak skončila, „plan_match_pct“ kolik % času odpovídal stav
 zařízení plánu.
+
+Konkrétní oblasti hodnocení (uveď jen když data ukazují problém nebo příležitost):
+- termíny at_risk / málo NT oken → dřívější deadline_earliest, vyšší safety, vypnout
+  hdo_only, nebo snížit cíl minima;
+- forecast nestačí na baterii a zařízení bez termínu = OK (mají čekat); se zapnutým
+  termínem mají jít ze sítě / NT;
+- vysoký export + nízké využití zařízení při „devices first“ → limity teploty/SoC
+  nebo priorita;
+- časté spínání (max_switches_per_hour) → delší on/off delay;
+- pojistka (failsafe) → senzory / timeout;
+- dry_run: hodnotí doporučení, ne skutečné spínání.
 
 Buď konkrétní a stručný, piš česky. Návrhy úprav uváděj jen tehdy, když je data
 opravdu podporují, ve tvaru: „Zařízení – parametr: z X na Y – důvod“. Nevymýšlej
@@ -82,6 +98,14 @@ STRUCTURE: dict[str, Any] = {
         "required": True,
         "selector": {"text": {"multiline": True}},
     },
+    "outlook": {
+        "description": (
+            "Předpoklad zbytku dne podle „outlook“ v datech: rizika termínů, "
+            "co čekat u bojleru/auta/baterie – krátké odrážky, nebo „Žádné“"
+        ),
+        "required": True,
+        "selector": {"text": {"multiline": True}},
+    },
 }
 
 
@@ -93,6 +117,39 @@ def _round(value: Any) -> Any:
     if isinstance(value, list):
         return [_round(v) for v in value]
     return value
+
+
+def build_outlook(
+    coordinator: FveOptimizerCoordinator, snap: Any | None = None
+) -> dict[str, Any]:
+    """Deterministic rest-of-day expectation from forecast + deadline plans."""
+    snap = snap if snap is not None else coordinator.data
+    if snap is None:
+        return {}
+    devices = []
+    for device in sorted(coordinator.devices.values(), key=lambda d: d.priority):
+        if not device.enabled:
+            continue
+        entry = {"name": device.name, "kind": device.kind, **device.outlook()}
+        devices.append(entry)
+    return _round(
+        {
+            "forecast": {
+                "remaining_kwh": snap.forecast_remaining_kwh,
+                "need_kwh": snap.forecast_need_kwh,
+                "covers_battery": snap.forecast_covers_battery,
+                "solar_for_devices_kwh": snap.solar_for_devices_kwh,
+                "hours_until_sunset": snap.hours_until_sunset,
+            },
+            "battery": {
+                "soc": snap.battery_soc,
+                "target_soc": snap.effective_target_soc,
+                "priority": snap.battery_priority,
+                "borrow": snap.borrow_active,
+            },
+            "devices": devices,
+        }
+    )
 
 
 def build_day_data(coordinator: FveOptimizerCoordinator) -> dict[str, Any]:
@@ -123,6 +180,7 @@ def build_day_data(coordinator: FveOptimizerCoordinator) -> dict[str, Any]:
             "max_switches_per_hour": max(per_hour.values(), default=0),
             "switch_times": switches,
             "state_now": device.status.reason,
+            "outlook": device.outlook(),
         }
     return _round(
         {
@@ -141,6 +199,7 @@ def build_day_data(coordinator: FveOptimizerCoordinator) -> dict[str, Any]:
                 "target_soc": snap.effective_target_soc if snap else None,
             },
             "forecast_remaining_kwh": snap.forecast_remaining_kwh if snap else None,
+            "outlook": build_outlook(coordinator),
             "failsafe_minutes": day.get("failsafe_s", 0.0) / 60,
             "recommendations": {
                 "finished": day.get("recommendations", []),
@@ -187,6 +246,87 @@ async def async_review(coordinator: FveOptimizerCoordinator) -> dict[str, Any]:
         "good": str(result.get("good") or "").strip(),
         "problems": str(result.get("problems") or "").strip(),
         "suggestions": str(result.get("suggestions") or "").strip(),
+        "outlook": str(result.get("outlook") or "").strip(),
     }
     _LOGGER.info("AI review %s: %s/10 – %s", review["date"], review["score"], review["summary"])
     return review
+
+
+OUTLOOK_CHECK_INSTRUCTIONS = """\
+Jsi energetický poradce. Integrace FVE Optimizer hlásí, že zařízení nestíhá termín
+(at_risk). Dostaneš aktuální „outlook“ (predikce, plán HDO, potřeba kWh) a nastavení.
+Navrhni 1–3 konkrétní kroky pro uživatele (změna parametru, ruční zásah, nebo „počkat
+na NT“). Piš česky, stručně. Nic sám neměň – jen poradíš.
+
+Data:
+"""
+
+OUTLOOK_CHECK_STRUCTURE: dict[str, Any] = {
+    "urgency": {
+        "description": "Naléhavost 1–5 (5 = hned jednat)",
+        "required": True,
+        "selector": {"number": {"min": 1, "max": 5, "step": 1}},
+    },
+    "advice": {
+        "description": "Konkrétní rada ve 2–5 větách nebo odrážkách",
+        "required": True,
+        "selector": {"text": {"multiline": True}},
+    },
+}
+
+
+async def async_outlook_check(
+    coordinator: FveOptimizerCoordinator, device_id: str
+) -> dict[str, Any]:
+    """Short AI advice when a device deadline becomes at_risk."""
+    entity_id = coordinator.conf.get(CONF_AI_TASK_ENTITY)
+    if not entity_id:
+        raise HomeAssistantError("No AI Task entity selected")
+    device = coordinator.devices.get(device_id)
+    if device is None:
+        raise HomeAssistantError(f"Unknown device {device_id}")
+    payload = _round(
+        {
+            "time": dt_util.now().strftime("%H:%M"),
+            "device": {
+                "id": device_id,
+                "name": device.name,
+                "kind": device.kind,
+                "settings": {
+                    t.key: device.config.get(t.key)
+                    for t in DEVICE_TUNABLES.get(device.kind, ())
+                    if t.key in device.config
+                },
+                "outlook": device.outlook(),
+                "reason": device.status.reason,
+            },
+            "outlook": build_outlook(coordinator),
+            "hdo": coordinator.data.hdo_active if coordinator.data else None,
+            "dry_run": coordinator.dry_run,
+        }
+    )
+    response = await coordinator.hass.services.async_call(
+        "ai_task",
+        "generate_data",
+        {
+            "task_name": f"FVE Optimizer – rada ({device.name})",
+            "entity_id": entity_id,
+            "instructions": OUTLOOK_CHECK_INSTRUCTIONS + json.dumps(payload, ensure_ascii=False),
+            "structure": OUTLOOK_CHECK_STRUCTURE,
+        },
+        blocking=True,
+        return_response=True,
+    )
+    result = (response or {}).get("data") or {}
+    if not isinstance(result, dict) or not result.get("advice"):
+        raise HomeAssistantError(f"Unexpected AI Task response: {response!r}")
+    advice = {
+        "at": dt_util.now().isoformat(),
+        "device_id": device_id,
+        "device": device.name,
+        "entity_id": entity_id,
+        "urgency": int(round(float(result.get("urgency") or 3))),
+        "advice": str(result.get("advice") or "").strip(),
+    }
+    _LOGGER.info("AI outlook check %s: %s", device.name, advice["advice"][:120])
+    return advice

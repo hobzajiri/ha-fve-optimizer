@@ -85,6 +85,209 @@ def _ev_states(hass: HomeAssistant, soc: str) -> None:
     )
 
 
+async def test_ev_order_holds_above_80_until_deadline(hass: HomeAssistant, freezer) -> None:
+    """Order to 90 %: charge to 80 % early, top-up only just before the deadline."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "82")
+    coordinator = await _setup(
+        hass,
+        _entry({}, ("ev_charger", _ev(ev_deadline_hdo_only=False, ev_capacity_kwh=10.0))),
+    )
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 90, "deadline": "2026-10-01 20:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    # 82→90 % is tiny (~0.1 h) → JIT starts ~19:45; at noon we hold.
+    assert data.get("deadline_phase") == "top_up"
+    assert data.get("urgent") is not True
+    assert data["reason"] in ("hold_until_deadline", "waiting_for_surplus", "no_surplus")
+
+    freezer.move_to(datetime(2026, 10, 1, 19, 50, tzinfo=PRAGUE))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["urgent"] is True
+    assert data["reason"] == "deadline_charging"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+
+async def test_ev_boost_charges_now_with_eta(hass: HomeAssistant, freezer) -> None:
+    """Fast charge ignores surplus/HDO and reports an ETA at max power."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 15, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "40")
+    # No surplus (importing), HDO-only daily deadline – boost must still run.
+    hass.states.async_set("sensor.grid", "2000")
+    entry = _entry(
+        {"hdo_source": "manual", "hdo_manual_workday": "00:00-02:00"},
+        ("ev_charger", _ev(ev_deadline_hdo_only=True, ev_capacity_kwh=10.0, ev_target_soc=80.0)),
+    )
+    coordinator = await _setup(hass, entry)
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id].get("urgent") is not True
+
+    result = await hass.services.async_call(
+        "fve_optimizer",
+        "start_ev_boost",
+        {"target_soc": 80},
+        blocking=True,
+        return_response=True,
+    )
+    await hass.async_block_till_done()
+    boost = result["boosts"][0]
+    assert boost["soc"] == 80
+    assert boost["eta"]
+    assert boost["hours"] > 0
+    # 40→80 % of 10 kWh / 0.9 ≈ 4.44 kWh at 11.04 kW ≈ 0.40 h → ~15:24
+    assert boost["eta"].startswith("2026-10-01T15:2")
+    data = coordinator.data.devices[device_id]
+    assert data["reason"] == "boost_charging"
+    assert data["deadline_source"] == "boost"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+    hass.states.async_set("sensor.car_soc", "81")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.devices[device_id].boost is None
+
+
+async def test_ev_daily_goal_not_mixed_with_later_order(hass: HomeAssistant, freezer) -> None:
+    """Earliest unmet goal wins: daily 80 % tomorrow must not chase Friday's 100 % order."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "75")
+    coordinator = await _setup(
+        hass,
+        _entry(
+            {},
+            (
+                "ev_charger",
+                _ev(
+                    ev_deadline_hdo_only=False,
+                    ev_deadline_soc=80.0,
+                    ev_capacity_kwh=10.0,
+                ),
+            ),
+        ),
+    )
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 100, "deadline": "2026-10-03 18:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["deadline_source"] == "daily"
+    assert data["deadline_soc"] == 80
+    assert data.get("urgent") is not True
+    # Tiny 75→80 % must not start just-in-time for Friday's 100 % order.
+    assert data["deadline"].startswith("2026-10-02T07:00")
+
+    # After morning minimum is met, the later order takes over (hold above 80 %).
+    hass.states.async_set("sensor.car_soc", "82")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["deadline_source"] == "order"
+    assert data["deadline_soc"] == 100
+    assert data.get("deadline_phase") == "top_up"
+    assert data.get("urgent") is not True
+
+
+async def test_ev_boost_clears_charge_order(hass: HomeAssistant, freezer) -> None:
+    """Starting a boost cancels an active charge order (and vice versa)."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "50")
+    coordinator = await _setup(
+        hass,
+        _entry({}, ("ev_charger", _ev(ev_deadline_hdo_only=False, ev_capacity_kwh=10.0))),
+    )
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 90, "deadline": "2026-10-01 20:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    assert coordinator.devices[device_id].charge_order is not None
+
+    await hass.services.async_call(
+        "fve_optimizer",
+        "start_ev_boost",
+        {"target_soc": 70, "device_id": device_id},
+        blocking=True,
+    )
+    assert coordinator.devices[device_id].boost == {"soc": 70.0}
+    assert coordinator.devices[device_id].charge_order is None
+
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 85, "deadline": "2026-10-01 22:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    assert coordinator.devices[device_id].charge_order["soc"] == 85.0
+    assert coordinator.devices[device_id].boost is None
+
+
+async def test_ev_charge_order_raises_deadline_target(hass: HomeAssistant, freezer) -> None:
+    """One-shot order charges above the daily morning minimum by the given time."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    # Daily min 60 %; order 90 % by tonight – just-in-time from ~low SoC.
+    freezer.move_to(datetime(2026, 10, 1, 18, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "50")
+    coordinator = await _setup(
+        hass,
+        _entry({}, ("ev_charger", _ev(ev_deadline_hdo_only=False, ev_capacity_kwh=10.0))),
+    )
+    device_id = next(iter(coordinator.devices))
+    # Without order, 50→60 % is tiny – not urgent at 18:00 for 07:00 next day.
+    assert coordinator.data.devices[device_id].get("urgent") is not True
+
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 90, "deadline": "2026-10-01 20:00:00", "name": "EcoVolter"},
+        blocking=True,
+        return_response=True,
+    )
+    await hass.async_block_till_done()
+    assert coordinator.devices[device_id].charge_order["soc"] == 90
+
+    # 50→90 % of 10 kWh ≈ 0.5 h → just-in-time starts ~19:20.
+    freezer.move_to(datetime(2026, 10, 1, 19, 30, tzinfo=PRAGUE))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["urgent"] is True
+    assert data["deadline_soc"] == 90
+    assert data["deadline_source"] == "order"
+    assert data["reason"] == "deadline_charging"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+    # Reaching order SoC clears the order.
+    hass.states.async_set("sensor.car_soc", "91")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.devices[device_id].charge_order is None
+
+
 async def test_ev_morning_minimum_just_in_time(hass: HomeAssistant, freezer) -> None:
     await hass.config.async_set_time_zone("Europe/Prague")
     rec = Recorder(hass)
@@ -112,6 +315,47 @@ async def test_ev_morning_minimum_just_in_time(hass: HomeAssistant, freezer) -> 
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert ("turn_off", "switch.ev_charge", None) in rec.calls
+
+
+async def test_ev_urgent_bypasses_surplus_soc(hass: HomeAssistant, freezer) -> None:
+    """Morning deadline may charge past the surplus SoC ceiling."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    # 50 → 60 % of 10 kWh / 0.9 ≈ 1.11 kWh at 11 kW × 1.2 ≈ 7 min → start ~06:43.
+    freezer.move_to(datetime(2026, 10, 1, 6, 50, tzinfo=PRAGUE))
+    _ev_states(hass, "50")
+    ev = _ev(
+        ev_deadline_hdo_only=False,
+        ev_target_soc=50.0,  # surplus max == current SoC → would block without urgent
+        ev_target_soc_hysteresis=2.0,
+        ev_capacity_kwh=10.0,
+    )
+    coordinator = await _setup(hass, _entry({}, ("ev_charger", ev)))
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id]["urgent"] is True
+    assert coordinator.data.devices[device_id]["reason"] == "deadline_charging"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+
+async def test_ev_deadline_catch_up_after_clock(hass: HomeAssistant, freezer) -> None:
+    """Once started, keep charging past the deadline clock until SoC is reached."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 5, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "40")
+    coordinator = await _setup(hass, _entry({}, ("ev_charger", _ev(ev_deadline_hdo_only=False))))
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id]["reason"] == "deadline_charging"
+    del rec.calls[:]
+
+    freezer.move_to(datetime(2026, 10, 1, 7, 30, tzinfo=PRAGUE))  # past 07:00, SoC still low
+    for entity_id, value in (("sensor.grid", "300"), ("sensor.batt", "0"), ("sensor.soc", "20"),
+                             ("sensor.car_soc", "45")):
+        hass.states.async_set(entity_id, value, force_update=True)
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data.devices[device_id]["urgent"] is True
+    assert coordinator.data.devices[device_id]["reason"] == "deadline_charging"
 
 
 async def test_ev_morning_minimum_only_in_hdo(hass: HomeAssistant, freezer) -> None:

@@ -220,6 +220,116 @@ async def test_boiler_temperature_blocks(hass: HomeAssistant) -> None:
     assert ("turn_on", "switch.boiler", None) not in rec.calls
 
 
+async def test_ev_target_soc_blocks(hass: HomeAssistant) -> None:
+    """Car at charge limit must not keep getting surplus allocations."""
+    rec = Recorder(hass)
+    ev = {
+        **EV,
+        "ev_soc_sensor": "sensor.car_soc",
+        "ev_target_soc": 80.0,
+        "ev_target_soc_hysteresis": 2.0,
+    }
+    _states(
+        hass, grid=-5000, batt=0, soc=95,
+        switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
+        binary_sensor__ev_connected="on", sensor__car_soc="80",
+    )
+    coordinator = await _setup(hass, _entry(("ev_charger", ev)))
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id]["reason"] == "soc_reached"
+    assert ("turn_on", "switch.ev_charge", None) not in rec.calls
+
+
+async def test_ev_target_soc_from_entity(hass: HomeAssistant) -> None:
+    """Car charge-limit entity overrides the fixed number."""
+    rec = Recorder(hass)
+    ev = {
+        **EV,
+        "ev_soc_sensor": "sensor.car_soc",
+        "ev_target_soc_entity": "number.car_charge_limit",
+        "ev_target_soc": 100.0,  # ignored while the entity is available
+        "ev_target_soc_hysteresis": 2.0,
+    }
+    _states(
+        hass, grid=-5000, batt=0, soc=95,
+        switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
+        binary_sensor__ev_connected="on", sensor__car_soc="80",
+        number__car_charge_limit="80",
+    )
+    coordinator = await _setup(hass, _entry(("ev_charger", ev)))
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id]["reason"] == "soc_reached"
+    assert coordinator.data.devices[device_id]["target_soc"] == 80.0
+    assert ("turn_on", "switch.ev_charge", None) not in rec.calls
+
+    # Entity unavailable → hold last known limit (80 %), do not jump to fixed 100 %.
+    hass.states.async_set("number.car_charge_limit", "unavailable")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data.devices[device_id]["reason"] == "soc_reached"
+    assert coordinator.data.devices[device_id]["target_soc"] == 80.0
+    assert coordinator.data.devices[device_id]["target_soc_source"] == "entity_held"
+
+async def test_ev_target_soc_hysteresis(hass: HomeAssistant) -> None:
+    rec = Recorder(hass)
+    ev = {
+        **EV,
+        "ev_soc_sensor": "sensor.car_soc",
+        "ev_target_soc": 80.0,
+        "ev_target_soc_hysteresis": 2.0,
+    }
+    _states(
+        hass, grid=-5000, batt=0, soc=95,
+        switch__ev_charge="on", input_number__ev_current="10", switch__ev_3f="on",
+        binary_sensor__ev_connected="on", sensor__car_soc="80",
+    )
+    entry = _entry(("ev_charger", ev))
+    coordinator = await _setup(hass, entry)
+    subentry_id = next(iter(entry.subentries))
+    assert ("turn_off", "switch.ev_charge", None) in rec.calls
+    assert coordinator.data.devices[subentry_id]["reason"] == "soc_reached"
+    del rec.calls[:]
+
+    hass.states.async_set("sensor.car_soc", "79")  # within hysteresis → stay off
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data.devices[subentry_id]["reason"] == "soc_reached"
+    assert not rec.calls
+
+    hass.states.async_set("sensor.car_soc", "78")  # 80 - 2 → surplus charging again
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+
+async def test_ev_target_raise_clears_hysteresis(hass: HomeAssistant) -> None:
+    """Raising the charge limit must resume surplus charging inside the old band."""
+    rec = Recorder(hass)
+    ev = {
+        **EV,
+        "ev_soc_sensor": "sensor.car_soc",
+        "ev_target_soc": 80.0,
+        "ev_target_soc_hysteresis": 2.0,
+    }
+    _states(
+        hass, grid=-5000, batt=0, soc=95,
+        switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
+        binary_sensor__ev_connected="on", sensor__car_soc="81",
+    )
+    coordinator = await _setup(hass, _entry(("ev_charger", ev)))
+    device_id = next(iter(coordinator.devices))
+    assert coordinator.data.devices[device_id]["reason"] == "soc_reached"
+    del rec.calls[:]
+
+    # Raise fixed target to 85 % while SoC is 81 → latch clears, charging starts.
+    device = coordinator.devices[device_id]
+    device.update_config({**device.config, "ev_target_soc": 85.0})
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.data.devices[device_id]["reason"] != "soc_reached"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+
 async def test_forecast_lowers_battery_target(hass: HomeAssistant) -> None:
     Recorder(hass)
     entry = MockConfigEntry(

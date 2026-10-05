@@ -34,6 +34,7 @@ from .const import (
     CONF_NIGHT_TARGET,
     CONF_BREAKER_MARGIN_A,
     BORROW_SOC_BAND,
+    CONF_AI_OUTLOOK_CHECK,
     CONF_AI_REVIEW_ENABLED,
     CONF_AI_REVIEW_TIME,
     CONF_AI_TASK_ENTITY,
@@ -56,6 +57,12 @@ from .const import (
     CONF_MAIN_BREAKER_A,
     CONF_MIN_BEFORE_BATTERY,
     CONF_NOMINAL_VOLTAGE,
+    CONF_NOTIFY_ON_AT_RISK,
+    CONF_NOTIFY_ON_BOOST,
+    CONF_NOTIFY_ON_FAILSAFE,
+    CONF_NOTIFY_ON_ORDER,
+    CONF_NOTIFY_ON_REVIEW,
+    CONF_NOTIFY_REVIEW_MAX_SCORE,
     CONF_PHASE_CURRENTS,
     CONF_PRICE_NT,
     CONF_PRICE_VT,
@@ -68,6 +75,26 @@ from .const import (
     HUB_TUNABLE_KEYS,
 )
 from .hdo import HdoSchedule, settings_from_conf
+from .notify import (
+    EVENT_BOOST,
+    EVENT_CHARGE_ORDER,
+    EVENT_DEADLINE_RISK,
+    EVENT_FAILSAFE,
+    EVENT_FAILSAFE_CLEARED,
+    EVENT_OUTLOOK_CHECK,
+    EVENT_REVIEW_DONE,
+    async_dismiss,
+    async_notify,
+    fire_event,
+    msg_at_risk,
+    msg_boost,
+    msg_failsafe,
+    msg_failsafe_cleared,
+    msg_order,
+    msg_outlook_check,
+    msg_review,
+    review_should_notify,
+)
 from .devices import (
     DEVICE_TYPES,
     Headroom,
@@ -99,6 +126,8 @@ class DispatchSnapshot:
     house_w: float | None = None
     managed_w: float = 0.0
     budget_w: float = 0.0
+    # What the budget is made of (for the card): devices, export, import, battery…
+    budget_parts: dict[str, float] = field(default_factory=dict)
     allocated_w: float = 0.0
     battery_priority: bool = True
     effective_target_soc: float | None = None
@@ -174,9 +203,16 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._last_accounting: float | None = None
         self._save_due: float | None = None
         self._failsafe_logged = False
+        # Deadline at_risk edge detection + AI outlook-check rate limit (device_id → date).
+        self._at_risk_ids: set[str] = set()
+        self._outlook_check_day: dict[str, str] = {}
+        self._boost_ids: set[str] = set()
         # Days the limit was raised / lowered – at most one raise per day.
         self._export_raised_day: str | None = None
         self._export_lowered_day: str | None = None
+        # Last good grid / battery / SoC – display only across brief unavailable blips.
+        self._last_good_inputs: tuple[float, float, float] | None = None
+        self._last_live_data: dict[str, Any] = {}
         self.hdo = HdoSchedule(hass, entry.entry_id, settings_from_conf(self.conf))
         self._state_store: Store[dict[str, Any]] = Store(hass, 1, f"{DOMAIN}.state.{entry.entry_id}")
         self._saved_state: dict[str, Any] = {}
@@ -243,45 +279,86 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
     def dry_run(self) -> bool:
         return bool(self.conf.get(CONF_DRY_RUN))
 
+    def _input_groups(self) -> list[list[str]]:
+        """Critical input groups. A pair is healthy when either side is readable.
+
+        Import/export and charge/discharge often stay at 0 (or unavailable) while
+        the other direction is active; integrations may also rewrite a state only
+        when it changes. Grouping avoids false 'missing' / 'frozen' alarms.
+        """
+        groups: list[list[str]] = [[CONF_BATTERY_SOC]]
+        if self.conf.get(CONF_GRID_POWER):
+            groups.append([CONF_GRID_POWER])
+        elif self._grid_computed():
+            groups.extend([[CONF_GRID_EXPORT], [CONF_HOUSE_POWER], [CONF_PV_POWER]])
+        else:
+            groups.append([CONF_GRID_IMPORT, CONF_GRID_EXPORT])
+        if self.conf.get(CONF_BATTERY_POWER):
+            groups.append([CONF_BATTERY_POWER])
+        else:
+            groups.append([CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE])
+        return groups
+
     def _input_problems(self) -> tuple[list[str], list[str]]:
         """(missing, frozen) critical inputs.
 
-        Missing = unavailable / unknown, checked per entity. Frozen = *all*
-        inputs silent for longer than the timeout: they come from the same
-        inverter, and some integrations write a state only when it changes
-        (battery discharge stays 0 W for hours), so one quiet entity alone
-        says nothing.
+        Missing = a whole group is unavailable / unknown. Frozen = *every*
+        group has been silent longer than the timeout (same inverter). One quiet
+        entity in a pair (e.g. charge stays 0 W for hours) is fine.
         """
         timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
         missing: list[str] = []
-        present: list[tuple[str, Any]] = []
+        group_seen: list[tuple[list[str], Any]] = []
         now = dt_util.utcnow()
-        for key in self._critical_inputs():
-            entity_id = self.conf.get(key)
-            state = self.hass.states.get(entity_id) if entity_id else None
-            if state is None or state_float(self.hass, entity_id) is None:
-                missing.append(str(entity_id))
+        for group in self._input_groups():
+            readable: list[tuple[str, Any]] = []
+            configured: list[str] = []
+            for key in group:
+                entity_id = self.conf.get(key)
+                if not entity_id:
+                    continue
+                configured.append(str(entity_id))
+                state = self.hass.states.get(entity_id)
+                if state is None or state_float(self.hass, entity_id) is None:
+                    continue
+                seen = getattr(state, "last_reported", None) or state.last_updated
+                readable.append((str(entity_id), seen))
+            if not configured:
                 continue
-            present.append((str(entity_id), getattr(state, "last_reported", None) or state.last_updated))
+            if not readable:
+                missing.extend(configured)
+                continue
+            newest = max(seen for _, seen in readable)
+            group_seen.append((configured, newest))
         frozen: list[str] = []
-        if timeout and present and all((now - seen).total_seconds() > timeout for _, seen in present):
-            frozen = [entity_id for entity_id, _ in present]
+        # timeout=0 disables the fail-safe entirely (hold forever / ignore frozen).
+        if (
+            timeout > 0
+            and group_seen
+            and not missing
+            and all((now - seen).total_seconds() > timeout for _, seen in group_seen)
+        ):
+            frozen = [entity_id for entities, _ in group_seen for entity_id in entities]
         return missing, frozen
 
     def _power(self, key: str) -> float | None:
         return state_power(self.hass, self.conf.get(key))
 
     def _signed(self, single: str, positive: str, plus: str, minus: str) -> float | None:
-        """One signed sensor, or two positive ones (plus − minus)."""
+        """One signed sensor, or two positive ones (plus − minus).
+
+        When using a pair, a missing side counts as 0 W – idle direction is often
+        unavailable or not rewritten until it changes.
+        """
         if self.conf.get(single):
             value = self._power(single)
             if value is None:
                 return None
             return value if self.conf[positive] else -value
         a, b = self._power(plus), self._power(minus)
-        if a is None or b is None:
+        if a is None and b is None:
             return None
-        return abs(a) - abs(b)
+        return abs(a or 0.0) - abs(b or 0.0)
 
     def _grid_computed(self) -> bool:
         """No import sensor: derive it from the house load (Growatt "local load")."""
@@ -315,21 +392,6 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         return self._signed(
             CONF_BATTERY_POWER, CONF_BATTERY_CHARGE_POSITIVE, CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE
         )
-
-    def _critical_inputs(self) -> list[str]:
-        keys = [CONF_BATTERY_SOC]
-        if self.conf.get(CONF_GRID_POWER):
-            keys.append(CONF_GRID_POWER)
-        elif self._grid_computed():
-            keys += [CONF_GRID_EXPORT, CONF_HOUSE_POWER, CONF_PV_POWER]
-        else:
-            keys += [CONF_GRID_IMPORT, CONF_GRID_EXPORT]
-        keys += (
-            [CONF_BATTERY_POWER]
-            if self.conf.get(CONF_BATTERY_POWER)
-            else [CONF_BATTERY_CHARGE, CONF_BATTERY_DISCHARGE]
-        )
-        return keys
 
     def _sun(self) -> tuple[bool, datetime | None, datetime | None] | None:
         """(sun up, next rising, next setting), None without the sun entity.
@@ -484,21 +546,30 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         snap.dry_run = self.dry_run
         missing, frozen = self._input_problems()
         snap.stale_inputs = missing + frozen
+        timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
         if snap.stale_inputs:
             # Frozen data is already older than the timeout → fail-safe now.
-            # Missing data: hold the current state until the timeout passes.
+            # Missing data: keep going on the last good values until the timeout.
+            # timeout=0 disables the fail-safe (permanent hold) – see UI description.
             if self._inputs_bad_since is None:
                 self._inputs_bad_since = now
-            timeout = float(self.conf.get(CONF_INPUT_TIMEOUT) or 0)
-            if frozen or (timeout and now - self._inputs_bad_since >= timeout):
+            if timeout > 0 and (frozen or now - self._inputs_bad_since >= timeout):
                 return await self._async_failsafe(snap, active, now)
         else:
             if self._failsafe_logged:
                 _LOGGER.warning("Inverter data is back – fail-safe ended")
+                self.hass.async_create_task(self._async_on_failsafe_cleared())
             self._inputs_bad_since = None
             self._failsafe_logged = False
 
+        if grid is not None and battery is not None and soc is not None:
+            self._last_good_inputs = (grid, battery, soc)
+
         if grid is None or battery is None or soc is None:
+            # Hold actuators – do not invent a budget from stale readings.
+            # Keep last good values only for display on the card.
+            if self._last_good_inputs is not None:
+                snap.grid_w, snap.battery_w, snap.battery_soc = self._last_good_inputs
             self._update_deadlines(snap, None, 0.0)
             snap.reason = "missing_input"
             _LOGGER.debug("Missing grid/battery/SoC input, holding current state")
@@ -529,6 +600,14 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         if snap.battery_priority:
             budget -= self._f(CONF_BATTERY_MAX_CHARGE_W)
         snap.budget_w = budget
+        snap.budget_parts = {
+            "devices": snap.managed_w,
+            "export": max(-grid, 0.0),
+            "import": max(grid, 0.0),
+            "battery": battery,
+            "battery_reserved": self._f(CONF_BATTERY_MAX_CHARGE_W) if snap.battery_priority else 0.0,
+            "reserve": self._f(CONF_RESERVE_W),
+        }
 
         headroom = self._headroom()
         snap.headroom_a = headroom.amps if math.isfinite(headroom.amps) else None
@@ -566,7 +645,20 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._save_state()
         self._log_decision(snap)
         devices = sorted(self.devices.values(), key=lambda d: (not d.status.urgent, d.priority))
-        snap.live_data = self._decision_data(snap, devices, dt_util.now().isoformat())
+        if snap.reason == "missing_input" and self._last_live_data:
+            # Keep gauges steady during a brief sensor gap, but never offer
+            # stale watch-only actions and mark the payload as held.
+            held = dict(self._last_live_data)
+            held["stale"] = True
+            held["recommendations"] = []
+            held["reason"] = "missing_input"
+            snap.live_data = held
+        else:
+            snap.live_data = self._decision_data(snap, devices, dt_util.now().isoformat())
+            if snap.reason not in ("missing_input", "failsafe"):
+                self._last_live_data = snap.live_data
+            elif snap.reason == "failsafe":
+                snap.live_data = {**snap.live_data, "stale": True}
         for subentry_id, device in self.devices.items():
             status = device.status
             snap.devices[subentry_id] = {
@@ -577,10 +669,197 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 "reason": status.reason if device.enabled else "disabled",
                 **status.extra,
             }
+        self._schedule_alert_edges(snap)
         return snap
 
+    def _schedule_alert_edges(self, snap: DispatchSnapshot) -> None:
+        """Detect at_risk / boost / order-completed edges and schedule notifies."""
+        at_risk: set[str] = set()
+        boosting: set[str] = set()
+        completed_orders: list[tuple[str, ManagedDevice, dict[str, Any]]] = []
+        for sid, device in self.devices.items():
+            if device.status.extra.get("deadline_at_risk"):
+                at_risk.add(sid)
+            if getattr(device, "boost", None):
+                boosting.add(sid)
+            pop = getattr(device, "pop_order_completed", None)
+            if callable(pop):
+                info = pop()
+                if info:
+                    completed_orders.append((sid, device, info))
+        new_risk = at_risk - self._at_risk_ids
+        self._at_risk_ids = at_risk
+        ended_boost = self._boost_ids - boosting
+        self._boost_ids = boosting
+        if new_risk or ended_boost or completed_orders:
+            self.hass.async_create_task(
+                self._async_handle_alert_edges(snap, new_risk, ended_boost, completed_orders)
+            )
+
+    async def _async_handle_alert_edges(
+        self,
+        snap: DispatchSnapshot,
+        new_risk: set[str],
+        ended_boost: set[str],
+        completed_orders: list[tuple[str, ManagedDevice, dict[str, Any]]] | None = None,
+    ) -> None:
+        for sid, device, order in completed_orders or []:
+            fire_event(
+                self.hass,
+                self,
+                EVENT_CHARGE_ORDER,
+                {
+                    "device_id": sid,
+                    "device": device.name,
+                    "action": "completed",
+                    **order,
+                },
+            )
+            detail = f"{order.get('soc')} %"
+            title, message = msg_order(
+                self.hass, device.name, False, detail, completed=True
+            )
+            await async_notify(
+                self.hass,
+                self,
+                title=title,
+                message=message,
+                notification_id=f"order_{sid}",
+                enabled=bool(self.conf.get(CONF_NOTIFY_ON_ORDER)),
+            )
+            await async_dismiss(self.hass, self, f"order_{sid}")
+
+        for sid in new_risk:
+            device = self.devices.get(sid)
+            if not device:
+                continue
+            extra = device.status.extra
+            detail_bits = []
+            if extra.get("deadline"):
+                detail_bits.append(str(extra["deadline"])[11:16] if len(str(extra["deadline"])) > 16 else str(extra["deadline"]))
+            if extra.get("deadline_plan"):
+                detail_bits.append("NT: " + ", ".join(extra["deadline_plan"]))
+            if extra.get("deadline_grid_kwh") is not None:
+                detail_bits.append(f"síť {extra['deadline_grid_kwh']} kWh")
+            detail = " · ".join(detail_bits)
+            fire_event(
+                self.hass,
+                self,
+                EVENT_DEADLINE_RISK,
+                {
+                    "device_id": sid,
+                    "device": device.name,
+                    "kind": device.kind,
+                    "detail": detail,
+                    "extra": {
+                        k: extra.get(k)
+                        for k in (
+                            "deadline",
+                            "deadline_plan",
+                            "deadline_grid_kwh",
+                            "deadline_soc",
+                            "deadline_mode",
+                        )
+                    },
+                },
+            )
+            title, message = msg_at_risk(self.hass, device.name, detail)
+            await async_notify(
+                self.hass,
+                self,
+                title=title,
+                message=message,
+                notification_id=f"at_risk_{sid}",
+                enabled=bool(self.conf.get(CONF_NOTIFY_ON_AT_RISK)),
+            )
+            if self.conf.get(CONF_AI_OUTLOOK_CHECK) and self.conf.get(CONF_AI_TASK_ENTITY):
+                today = dt_util.now().date().isoformat()
+                if self._outlook_check_day.get(sid) != today:
+                    self._outlook_check_day[sid] = today
+                    self.hass.async_create_task(self._async_outlook_check(sid))
+
+        for sid in ended_boost:
+            device = self.devices.get(sid)
+            if not device:
+                continue
+            fire_event(
+                self.hass,
+                self,
+                EVENT_BOOST,
+                {"device_id": sid, "device": device.name, "action": "finished"},
+            )
+            title, message = msg_boost(self.hass, device.name, started=False)
+            await async_notify(
+                self.hass,
+                self,
+                title=title,
+                message=message,
+                notification_id=f"boost_{sid}",
+                enabled=bool(self.conf.get(CONF_NOTIFY_ON_BOOST)),
+            )
+            await async_dismiss(self.hass, self, f"boost_{sid}")
+
+    async def _async_outlook_check(self, device_id: str) -> None:
+        from .review import async_outlook_check  # noqa: PLC0415
+
+        try:
+            advice = await async_outlook_check(self, device_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("AI outlook check failed for %s: %s", device_id, err)
+            return
+        fire_event(self.hass, self, EVENT_OUTLOOK_CHECK, advice)
+        title, message = msg_outlook_check(
+            self.hass, advice.get("device", device_id), advice.get("advice", "")
+        )
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"outlook_{device_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_AT_RISK)),
+        )
+
+    async def _async_on_failsafe(self, sensors: list[str]) -> None:
+        fire_event(
+            self.hass,
+            self,
+            EVENT_FAILSAFE,
+            {"sensors": sensors},
+        )
+        title, message = msg_failsafe(self.hass, sensors)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"failsafe_{self.config_entry.entry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_FAILSAFE)),
+        )
+
+    async def _async_on_failsafe_cleared(self) -> None:
+        fire_event(self.hass, self, EVENT_FAILSAFE_CLEARED, {})
+        title, message = msg_failsafe_cleared(self.hass)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"failsafe_clear_{self.config_entry.entry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_FAILSAFE)),
+        )
+        await async_dismiss(self.hass, self, f"failsafe_{self.config_entry.entry_id}")
     def _log_decision(self, snap: DispatchSnapshot) -> None:
         """Log why the dispatcher decided what it did – only when it changes."""
+        # Brief sensor gaps: hold without spamming "Chybí data ze střídače".
+        if snap.reason == "missing_input" and self._decision[0] is not None:
+            (
+                snap.decision,
+                snap.decision_lines,
+                snap.decision_changed_at,
+                snap.decision_data,
+            ) = self._decision
+            return
         devices = sorted(
             (d for d in self.devices.values()), key=lambda d: (not d.status.urgent, d.priority)
         )
@@ -651,6 +930,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         del day_log[:-DAY_LOG_SIZE]
         _LOGGER.debug("Decision changed\n%s", "\n".join(lines))
 
+    def _outlook(self, snap: DispatchSnapshot) -> dict[str, Any]:
+        """Rest-of-day expectation for the card and AI (deterministic)."""
+        from .review import build_outlook  # noqa: PLC0415 - avoid import cycle at load
+
+        return build_outlook(self, snap)
+
     def _decision_data(
         self, snap: DispatchSnapshot, devices: list[ManagedDevice], changed_at: str
     ) -> dict[str, Any]:
@@ -670,10 +955,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "battery_target_soc": snap.effective_target_soc,
             "battery_priority": snap.battery_priority,
             "budget_w": round(snap.budget_w),
+            "budget_parts": {k: round(v) for k, v in snap.budget_parts.items()},
             "allocated_w": round(snap.allocated_w),
             "forecast_kwh": snap.forecast_remaining_kwh,
             "forecast_need_kwh": snap.forecast_need_kwh,
             "forecast_covers": snap.forecast_covers_battery,
+            "outlook": self._outlook(snap),
             "export_raised": bool(self._export_raised),
             "export_limit_now": state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY)),
             "export_limit_controlled": self._export_controlled(),
@@ -697,6 +984,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "review_running": self.review_running,
             "review_error": self.review_error,
             "stale_inputs": snap.stale_inputs,
+            "stale": snap.reason in ("missing_input", "failsafe"),
             "headroom_a": None if snap.headroom_a is None else round(snap.headroom_a, 1),
             "devices": [
                 {
@@ -724,6 +1012,18 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "phases": d.status.extra.get("phases"),
                     "temperature": d.status.extra.get("temperature"),
                     "soc": d.status.extra.get("soc"),
+                    "target_soc": d.status.extra.get("target_soc"),
+                    "target_soc_source": d.status.extra.get("target_soc_source"),
+                    "deadline_soc": d.status.extra.get("deadline_soc"),
+                    "deadline_mode": d.status.extra.get("deadline_mode"),
+                    "deadline_source": d.status.extra.get("deadline_source"),
+                    "deadline_eta": d.status.extra.get("deadline_eta"),
+                    "deadline_phase": d.status.extra.get("deadline_phase"),
+                    "deadline_chase_soc": d.status.extra.get("deadline_chase_soc"),
+                    "charge_order": d.status.extra.get("charge_order"),
+                    "boost": d.status.extra.get("boost"),
+                    "legionella_due": d.status.extra.get("legionella_due"),
+                    "connected": d.status.extra.get("connected"),
                     "plan": d.status.extra.get("deadline_plan"),
                     "at_risk": d.status.extra.get("deadline_at_risk"),
                 }
@@ -801,7 +1101,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         if not self._export_makes_sense(snap, active, soc, house_w):
             return
         await self._set_export_raised(True)
-        self._export_raised_day = today
+        if not self.dry_run:
+            self._export_raised_day = today
 
     def _recommendations(self) -> list[dict[str, Any]]:
         """Watch-only: what to switch by hand so reality follows the plan."""
@@ -935,6 +1236,30 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self.reviews = [review, *self.reviews][:REVIEW_HISTORY]
         self._save_state()
         await self.async_request_refresh()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_REVIEW_DONE,
+            {
+                "date": review.get("date"),
+                "score": review.get("score"),
+                "summary": review.get("summary"),
+                "suggestions": review.get("suggestions"),
+                "problems": review.get("problems"),
+                "outlook": review.get("outlook"),
+            },
+        )
+        max_score = float(self.conf.get(CONF_NOTIFY_REVIEW_MAX_SCORE) or 7)
+        if review_should_notify(review, max_score):
+            title, message = msg_review(self.hass, review)
+            await async_notify(
+                self.hass,
+                self,
+                title=title,
+                message=message,
+                notification_id=f"review_{review.get('date')}",
+                enabled=bool(self.conf.get(CONF_NOTIFY_ON_REVIEW)),
+            )
         return review
 
     async def async_scheduled_review(self, now: datetime) -> None:
@@ -1039,6 +1364,166 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             await self.async_request_refresh()
         return done
 
+    def _ev_by_id_or_name(self, device_id: str | None = None, name: str | None = None):
+        """Resolve an EV charger by subentry id or name."""
+        from .devices import EvChargerDevice  # noqa: PLC0415
+
+        if device_id and (device := self.devices.get(device_id)):
+            if isinstance(device, EvChargerDevice):
+                return device
+            raise ValueError(f"{device_id} is not an EV charger")
+        if name:
+            for device in self.devices.values():
+                if isinstance(device, EvChargerDevice) and device.name == name:
+                    return device
+            raise ValueError(f"No EV charger named {name!r}")
+        evs = [d for d in self.devices.values() if isinstance(d, EvChargerDevice)]
+        if len(evs) == 1:
+            return evs[0]
+        if not evs:
+            raise ValueError("No EV charger configured")
+        raise ValueError("Several EV chargers – pass device_id or name")
+
+    async def async_set_ev_charge_order(
+        self,
+        target_soc: float,
+        deadline: datetime,
+        device_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """One-shot charge order: reach target_soc by deadline."""
+        device = self._ev_by_id_or_name(device_id, name)
+        order = device.set_charge_order(target_soc, deadline)
+        self._save_state()
+        await self.async_request_refresh()
+        _LOGGER.info(
+            "%s: charge order %s %% by %s",
+            device.name,
+            order["soc"],
+            order["deadline"],
+        )
+        fire_event(
+            self.hass,
+            self,
+            EVENT_CHARGE_ORDER,
+            {"device_id": device.subentry_id, "device": device.name, "action": "set", **order},
+        )
+        title, message = msg_order(
+            self.hass,
+            device.name,
+            True,
+            f"{order['soc']} % · {order['deadline']}",
+        )
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"order_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_ORDER)),
+        )
+        return {"device": device.name, "id": device.subentry_id, **order}
+
+    async def async_clear_ev_charge_order(
+        self, device_id: str | None = None, name: str | None = None
+    ) -> dict[str, Any]:
+        """Cancel an active EV charge order."""
+        device = self._ev_by_id_or_name(device_id, name)
+        device.clear_charge_order()
+        self._save_state()
+        await self.async_request_refresh()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_CHARGE_ORDER,
+            {"device_id": device.subentry_id, "device": device.name, "action": "cleared"},
+        )
+        title, message = msg_order(self.hass, device.name, False)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"order_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_ORDER)),
+        )
+        await async_dismiss(self.hass, self, f"order_{device.subentry_id}")
+        return {"device": device.name, "id": device.subentry_id, "cleared": True}
+
+    async def async_start_ev_boost(
+        self,
+        target_soc: float | None = None,
+        device_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Fast charge from now until target SoC; returns ETA estimate."""
+        device = self._ev_by_id_or_name(device_id, name)
+        boost = device.start_boost(target_soc)
+        self._save_state()
+        await self.async_request_refresh()
+        extra = (self.data.devices.get(device.subentry_id) if self.data else {}) or {}
+        _LOGGER.info(
+            "%s: boost to %s %% (eta %s)",
+            device.name,
+            boost["soc"],
+            extra.get("deadline_eta"),
+        )
+        result = {
+            "device": device.name,
+            "id": device.subentry_id,
+            **boost,
+            "eta": extra.get("deadline_eta"),
+            "hours": extra.get("deadline_charging_h"),
+            "need_kwh": extra.get("deadline_need_kwh"),
+        }
+        self._boost_ids.add(device.subentry_id)
+        fire_event(
+            self.hass,
+            self,
+            EVENT_BOOST,
+            {"device_id": device.subentry_id, "action": "started", **result},
+        )
+        detail = f"→ {boost['soc']} %"
+        if result.get("eta"):
+            detail += f" · ETA {str(result['eta'])[11:16]}"
+        title, message = msg_boost(self.hass, device.name, True, detail)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"boost_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_BOOST)),
+        )
+        return result
+
+    async def async_stop_ev_boost(
+        self, device_id: str | None = None, name: str | None = None
+    ) -> dict[str, Any]:
+        """Stop fast charging."""
+        device = self._ev_by_id_or_name(device_id, name)
+        device.stop_boost()
+        self._boost_ids.discard(device.subentry_id)
+        self._save_state()
+        await self.async_request_refresh()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_BOOST,
+            {"device_id": device.subentry_id, "device": device.name, "action": "stopped"},
+        )
+        title, message = msg_boost(self.hass, device.name, False)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"boost_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_BOOST)),
+        )
+        await async_dismiss(self.hass, self, f"boost_{device.subentry_id}")
+        return {"device": device.name, "id": device.subentry_id, "stopped": True}
+
     async def _async_apply(self, active: list[ManagedDevice]) -> None:
         if self.dry_run:
             return  # "watch only": decisions are shown, nothing is switched
@@ -1069,6 +1554,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 ", ".join(snap.stale_inputs),
             )
             self._failsafe_logged = True
+            self.hass.async_create_task(self._async_on_failsafe(list(snap.stale_inputs)))
         self._update_deadlines(snap, None, 0.0)
         day = self.today()
         day["failsafe_s"] = day.get("failsafe_s", 0.0) + float(self.conf[CONF_UPDATE_INTERVAL])
@@ -1116,8 +1602,13 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         return bool(self.conf.get(CONF_EXPORT_LIMIT_ENTITY)) and bool(self.conf.get(CONF_EXPORT_CONTROL))
 
     def _sync_export_state(self) -> None:
-        """After a restart take over the current limit instead of rewriting it."""
-        if self._export_raised is not None:
+        """Align internal raised/normal with the entity (restart + later drift).
+
+        In watch-only mode the entity is never written, so once we have a
+        virtual decision keep it – otherwise every refresh would snap back to
+        the real (usually normal) limit and flap recommendations.
+        """
+        if self.dry_run and self._export_raised is not None:
             return
         current = state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY))
         if current is None:
@@ -1135,6 +1626,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             return
         if self.dry_run:
             _LOGGER.info("Watch only: would set the export limit %s", "raised" if raised else "normal")
+            # Do not persist the day-flag – dry-run must not burn the real raise.
             self._export_raised = raised
             return
         value = self._f(CONF_EXPORT_LIMIT_RAISED if raised else CONF_EXPORT_LIMIT_NORMAL)
@@ -1212,10 +1704,13 @@ _SUMMARY_CS: dict[str, Any] = {
     "reasons": {
         "init": "start", "disabled": "neřízeno", "unavailable": "nedostupné",
         "not_connected": "auto nepřipojeno", "temperature_reached": "nahřáto",
+        "soc_reached": "nabito",
         "waiting_for_surplus": "čeká na přebytek", "starting": "spouští se",
         "running": "běží", "charging": "nabíjí", "no_surplus": "málo přebytků",
         "min_on_time": "min. doba zapnutí", "min_off_time": "min. doba vypnutí",
         "deadline_heating": "nahřívá do termínu", "deadline_charging": "nabíjí do termínu",
+        "boost_charging": "rychlé nabíjení",
+        "hold_until_deadline": "drží ~80 % do termínu",
         "breaker_limit": "omezeno jističem", "waiting_for_hdo": "čeká na HDO",
     },
 }
@@ -1241,10 +1736,13 @@ _SUMMARY_EN: dict[str, Any] = {
     "reasons": {
         "init": "starting", "disabled": "not controlled", "unavailable": "unavailable",
         "not_connected": "car not connected", "temperature_reached": "hot",
+        "soc_reached": "charged",
         "waiting_for_surplus": "waiting for surplus", "starting": "starting",
         "running": "running", "charging": "charging", "no_surplus": "low surplus",
         "min_on_time": "min on time", "min_off_time": "min off time",
         "deadline_heating": "heating for deadline", "deadline_charging": "charging for deadline",
+        "boost_charging": "fast charging",
+        "hold_until_deadline": "holding ~80 % until deadline",
         "breaker_limit": "breaker limit", "waiting_for_hdo": "waiting for HDO",
     },
 }

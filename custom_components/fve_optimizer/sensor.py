@@ -36,6 +36,7 @@ DEVICE_REASONS = [
     "unavailable",
     "not_connected",
     "temperature_reached",
+    "soc_reached",
     "waiting_for_surplus",
     "starting",
     "running",
@@ -47,6 +48,8 @@ DEVICE_REASONS = [
     "breaker_limit",
     "waiting_for_hdo",
     "deadline_charging",
+    "boost_charging",
+    "hold_until_deadline",
 ]
 
 
@@ -159,7 +162,7 @@ class HubSensor(FveOptimizerEntity, SensorEntity):
         if self.entity_description.key == "ai_review":
             latest = self.coordinator.reviews[0] if self.coordinator.reviews else {}
             return {
-                **{k: latest.get(k) for k in ("date", "at", "summary", "good", "problems", "suggestions", "entity_id")},
+                **{k: latest.get(k) for k in ("date", "at", "summary", "good", "problems", "suggestions", "outlook", "entity_id")},
                 "history": [{"date": r.get("date"), "score": r.get("score")} for r in self.coordinator.reviews],
                 "error": self.coordinator.review_error,
             }

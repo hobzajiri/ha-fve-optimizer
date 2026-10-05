@@ -59,6 +59,7 @@ A **Přidat nabíječku EV**:
 | Přepínač 3 fází | `input_boolean.sim_ev_3phase` |
 | Senzor výkonu | `sensor.sim_ev_power` |
 | Auto připojeno | `binary_sensor.sim_ev_connected` |
+| SoC auta | `sensor.sim_ev_soc` (pro termín / objednávku / zobrazení na kartě) |
 
 ## Dashboard „Simulátor“
 

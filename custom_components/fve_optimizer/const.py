@@ -65,6 +65,18 @@ CONF_DRY_RUN: Final = "dry_run"  # compute and show, never switch anything
 CONF_AI_TASK_ENTITY: Final = "ai_task_entity"
 CONF_AI_REVIEW_ENABLED: Final = "ai_review_enabled"
 CONF_AI_REVIEW_TIME: Final = "ai_review_time"
+# Mid-day AI advice when a deadline becomes at_risk (uses the same AI Task entity)
+CONF_AI_OUTLOOK_CHECK: Final = "ai_outlook_check"
+
+# Notifications (notify.* service and/or persistent_notification) + always-on events
+CONF_NOTIFY_SERVICE: Final = "notify_service"  # e.g. mobile_app_pixel or notify.telegram
+CONF_PERSISTENT_NOTIFICATION: Final = "persistent_notification"
+CONF_NOTIFY_ON_REVIEW: Final = "notify_on_review"
+CONF_NOTIFY_REVIEW_MAX_SCORE: Final = "notify_review_max_score"
+CONF_NOTIFY_ON_FAILSAFE: Final = "notify_on_failsafe"
+CONF_NOTIFY_ON_AT_RISK: Final = "notify_on_at_risk"
+CONF_NOTIFY_ON_BOOST: Final = "notify_on_boost"
+CONF_NOTIFY_ON_ORDER: Final = "notify_on_order"
 
 DEFAULTS: Final[dict[str, object]] = {
     CONF_GRID_IMPORT_POSITIVE: True,
@@ -95,6 +107,14 @@ DEFAULTS: Final[dict[str, object]] = {
     CONF_DRY_RUN: False,
     CONF_AI_REVIEW_ENABLED: True,
     CONF_AI_REVIEW_TIME: "21:00:00",
+    CONF_AI_OUTLOOK_CHECK: True,
+    CONF_PERSISTENT_NOTIFICATION: True,
+    CONF_NOTIFY_ON_REVIEW: True,
+    CONF_NOTIFY_REVIEW_MAX_SCORE: 7,
+    CONF_NOTIFY_ON_FAILSAFE: True,
+    CONF_NOTIFY_ON_AT_RISK: True,
+    CONF_NOTIFY_ON_BOOST: True,
+    CONF_NOTIFY_ON_ORDER: True,
 }
 
 # --- Subentries: managed devices ---------------------------------------------
@@ -143,15 +163,21 @@ CONF_CONNECTED_ENTITY: Final = "connected_entity"
 CONF_MIN_CURRENT: Final = "min_current"
 CONF_MAX_CURRENT: Final = "max_current"
 CONF_PHASE_SWITCH_INTERVAL: Final = "phase_switch_interval_s"
-# "at least X % by HH:MM" – needs the car SoC sensor
+# "at least X % by HH:MM" / max SoC from surplus – needs the car SoC sensor
 CONF_EV_SOC_SENSOR: Final = "ev_soc_sensor"
 CONF_EV_CAPACITY: Final = "ev_capacity_kwh"
+CONF_EV_TARGET_SOC: Final = "ev_target_soc"
+CONF_EV_TARGET_SOC_ENTITY: Final = "ev_target_soc_entity"
+CONF_EV_TARGET_HYSTERESIS: Final = "ev_target_soc_hysteresis"
 CONF_EV_DEADLINE_ENABLED: Final = "ev_deadline_enabled"
 CONF_EV_DEADLINE_TIME: Final = "ev_deadline_time"
 CONF_EV_DEADLINE_SOC: Final = "ev_deadline_soc"
 CONF_EV_DEADLINE_HDO_ONLY: Final = "ev_deadline_hdo_only"
 CONF_EV_EFFICIENCY: Final = "ev_charge_efficiency"
 CONF_EV_DEADLINE_SAFETY: Final = "ev_deadline_safety_factor"
+# Above this SoC, deadline/order top-up waits until just before the deadline
+# (battery-friendly; keeps ~80 % most of the time).
+EV_HOLD_SOC: Final = 80.0
 
 DEVICE_DEFAULTS: Final[dict[str, object]] = {
     CONF_PRIORITY: 10,
@@ -170,6 +196,8 @@ DEVICE_DEFAULTS: Final[dict[str, object]] = {
     CONF_MAX_CURRENT: 16,
     CONF_PHASE_SWITCH_INTERVAL: 900,
     CONF_EV_CAPACITY: 77.0,
+    CONF_EV_TARGET_SOC: 100.0,
+    CONF_EV_TARGET_HYSTERESIS: 2.0,
     CONF_EV_DEADLINE_ENABLED: False,
     CONF_EV_DEADLINE_TIME: "07:00:00",
     CONF_EV_DEADLINE_SOC: 60.0,
@@ -240,6 +268,14 @@ HUB_TUNABLES: Final[tuple[Tunable, ...]] = (
     Tunable(CONF_DRY_RUN, kind="switch"),
     Tunable(CONF_AI_REVIEW_ENABLED, kind="switch", requires=CONF_AI_TASK_ENTITY),
     Tunable(CONF_AI_REVIEW_TIME, kind="time", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_AI_OUTLOOK_CHECK, kind="switch", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_PERSISTENT_NOTIFICATION, kind="switch"),
+    Tunable(CONF_NOTIFY_ON_REVIEW, kind="switch"),
+    Tunable(CONF_NOTIFY_REVIEW_MAX_SCORE, 1, 10, 1),
+    Tunable(CONF_NOTIFY_ON_FAILSAFE, kind="switch"),
+    Tunable(CONF_NOTIFY_ON_AT_RISK, kind="switch"),
+    Tunable(CONF_NOTIFY_ON_BOOST, kind="switch"),
+    Tunable(CONF_NOTIFY_ON_ORDER, kind="switch"),
 )
 
 PHASES_TUNABLE: Final = Tunable(CONF_PHASES, options=("1", "3"), kind="select")
@@ -280,6 +316,8 @@ DEVICE_TUNABLES: Final[dict[str, tuple[Tunable, ...]]] = {
         Tunable(CONF_MAX_CURRENT, 1, 32, 1, "A"),
         Tunable(CONF_PHASE_SWITCH_INTERVAL, 0, 7200, 1, "s"),
         *COMMON_DEVICE_TUNABLES,
+        Tunable(CONF_EV_TARGET_SOC, 10, 100, 1, "%", requires=CONF_EV_SOC_SENSOR),
+        Tunable(CONF_EV_TARGET_HYSTERESIS, 0, 20, 1, "%", requires=CONF_EV_SOC_SENSOR),
         Tunable(CONF_EV_DEADLINE_ENABLED, kind="switch", requires=CONF_EV_SOC_SENSOR),
         Tunable(CONF_EV_DEADLINE_TIME, kind="time", requires=CONF_EV_SOC_SENSOR),
         Tunable(CONF_EV_DEADLINE_SOC, 10, 100, 1, "%", requires=CONF_EV_SOC_SENSOR),

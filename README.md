@@ -75,10 +75,10 @@ Zrušení na kartě nebo `clear_ev_charge_order`.
 (bez HDO), s odhadem času. Stop na kartě nebo `stop_ev_boost`.
 
 **Odjezd auta**: na kartě (Odjezd + volitelný Návrat → Naplánovat odjezd), nebo
-služba `fve_optimizer.set_ev_away`. Do odjezdu má auto přednost u přebytků;
-když predikce po odjezdu stihne znovu nabít domácí baterii na cíl, smí se do
-auta přesunout i část energie z baterie. Po odpojení nebo po návratu se plán
-zruší. Zrušení na kartě nebo `clear_ev_away`.
+služba `fve_optimizer.set_ev_away`. Když predikce po odjezdu stihne znovu nabít
+domácí baterii na cíl, do odjezdu nemá baterie přednost u přebytků a auto je
+dostane dřív než bojler – **bez nuceného vybíjení baterie naplno**. Po odpojení
+nebo po návratu se plán zruší. Zrušení na kartě nebo `clear_ev_away`.
 
 S **Nabít do termínu** přibude **Termín nabití**, **Minimální SoC v termínu**,
 **Kapacita baterie auta**, **Účinnost nabíjení** a **Dobíjet do termínu jen v HDO**.

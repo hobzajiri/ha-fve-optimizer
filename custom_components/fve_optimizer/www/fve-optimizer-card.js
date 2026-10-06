@@ -61,7 +61,7 @@ const T = {
     boostStart: "Rychle teď", boostStop: "Stop rychlé",
     awayLeave: "Odjezd", awayReturn: "Návrat", awaySet: "Naplánovat odjezd", awayClear: "Zrušit odjezd",
     awayLend: "z baterie",
-    holdHint: "Do 80 % dřív · 80–100 % až těsně před termínem · Odjezd: přebytek (+ baterie dle predikce) dřív do auta",
+    holdHint: "Do 80 % dřív · 80–100 % až těsně před termínem · Odjezd: při dobré predikci uvolní přebytek z baterie do auta (ne nabíjení naplno)",
     orderOpen: "Nabíjení", orderModalTitle: "Nabíjení auta", orderClose: "Zavřít",
     orderError: "Nepodařilo se uložit – zkus to znovu",
   },
@@ -117,7 +117,7 @@ const T = {
     boostStart: "Fast now", boostStop: "Stop boost",
     awayLeave: "Leave", awayReturn: "Return", awaySet: "Plan away", awayClear: "Clear away",
     awayLend: "from battery",
-    holdHint: "To 80 % earlier · 80–100 % only just before the deadline · Away: surplus (+ battery if forecast refills) into the car first",
+    holdHint: "To 80 % earlier · 80–100 % only just before the deadline · Away: with a good forecast, release surplus from the battery to the car (not full-power dump)",
     orderOpen: "Charge", orderModalTitle: "EV charging", orderClose: "Close",
     orderError: "Could not save – try again",
   },
@@ -435,7 +435,9 @@ class FveOptimizerCard extends HTMLElement {
           const bits = [t.away];
           if (x.deadline) bits.push(`${t.until} ${hhmm(x.deadline)}`);
           if (x.target != null) bits.push(`${Math.round(x.target)} %`);
-          if (x.battery_lend_kwh > 0.05) bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
+          if (x.releases_battery && x.battery_lend_kwh > 0.05) {
+            bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
+          }
           text = bits.join(" · ");
           cls = "warn";
         } else if (x.mode === "deadline") {

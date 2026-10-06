@@ -650,6 +650,14 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         snap.forecast_covers_battery = covered
         snap.battery_priority = soc < target_soc
         self._prepare_away_lend(snap, soc, base_house_w)
+        # Away + refillable after leave: do not hold surplus in the house battery.
+        from .devices import EvChargerDevice  # noqa: PLC0415
+
+        if any(
+            isinstance(d, EvChargerDevice) and d.away_releases_battery()
+            for d in self.devices.values()
+        ):
+            snap.battery_priority = False
         self._update_deadlines(
             snap,
             self._solar_for_devices(base_house_w),
@@ -682,6 +690,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         # power the battery would get – charging the battery only to discharge
         # it into the boiler / car in the evening would be a wasted cycle.
         # Everyone after them shares the budget without the battery's part.
+        # Away + refillable forecast: EV outranks other non-urgent loads (boiler)
+        # so surplus goes into the car before leave.
         borrow = self._borrow_allowed(snap, soc)
         snap.borrow_active = borrow
         for device in active:
@@ -689,10 +699,10 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         first = [d for d in active if d.status.urgent or d.minimum_pending]
         rest = [d for d in active if d not in first]
         consumed = 0.0
-        for device in sorted(first, key=lambda d: (not d.status.urgent, d.priority)):
+        for device in sorted(first, key=self._dispatch_key):
             device.status.min_first = not device.status.urgent
             consumed += device.plan(full_budget - consumed, headroom, now)
-        for device in sorted(rest, key=lambda d: d.priority):
+        for device in sorted(rest, key=self._dispatch_key):
             device.status.min_first = False
             consumed += device.plan(budget - consumed, headroom, now)
         snap.allocated_w = consumed
@@ -702,6 +712,13 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         await self._control_export_limit(snap, active, soc, base_house_w)
         snap.reason = "battery_priority" if snap.battery_priority else "dispatching"
         return self._finish(snap)
+
+    def _dispatch_key(self, device: ManagedDevice) -> tuple:
+        """Sort key: urgent → away EV (refillable) → priority number."""
+        from .devices import EvChargerDevice  # noqa: PLC0415
+
+        away_first = isinstance(device, EvChargerDevice) and device.away_releases_battery()
+        return (not device.status.urgent, not away_first, device.priority)
 
     def _finish(self, snap: DispatchSnapshot) -> DispatchSnapshot:
         snap.export_limit_raised = bool(self._export_raised)
@@ -1598,7 +1615,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         device_id: str | None = None,
         name: str | None = None,
     ) -> dict[str, Any]:
-        """Plan EV absence: prefer car before leave (surplus + lendable battery)."""
+        """Plan EV absence: release battery for surplus when forecast refills after leave."""
         device = self._ev_by_id_or_name(device_id, name)
         away = device.set_away(leave_at, return_at)
         self._save_state()

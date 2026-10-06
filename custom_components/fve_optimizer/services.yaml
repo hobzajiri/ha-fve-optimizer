@@ -94,10 +94,10 @@ stop_ev_boost:
 set_ev_away:
   name: Set EV away window
   description: >
-    Plan when the car will leave. Until leave time the optimizer prefers charging
-    the car from surplus, and may move energy from the house battery when the
-    forecast says the battery will refill after departure. Optional return time
-    clears the plan automatically.
+    Plan when the car will leave. If the forecast can refill the house battery
+    after departure, surplus goes to the car first (ahead of the boiler; battery
+    priority is released) until leave time – without forced full-power discharge.
+    Optional return time clears the plan automatically.
   fields:
     leave_at:
       name: Leave at

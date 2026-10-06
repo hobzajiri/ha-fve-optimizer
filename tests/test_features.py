@@ -160,8 +160,10 @@ async def test_ev_boost_charges_now_with_eta(hass: HomeAssistant, freezer) -> No
     assert coordinator.devices[device_id].boost is None
 
 
-async def test_ev_away_lends_battery_when_forecast_refills(hass: HomeAssistant, freezer) -> None:
-    """Before leave, move house-battery energy into the car when sun refill covers it."""
+async def test_ev_away_releases_battery_for_surplus_not_forced_charge(
+    hass: HomeAssistant, freezer
+) -> None:
+    """Away + refillable forecast: surplus to the car, no full-power battery dump."""
     await hass.config.async_set_time_zone("Europe/Prague")
     rec = Recorder(hass)
     freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
@@ -170,6 +172,7 @@ async def test_ev_away_lends_battery_when_forecast_refills(hass: HomeAssistant, 
         datetime(2026, 10, 1, 18, 50, tzinfo=PRAGUE),
         datetime(2026, 10, 2, 7, 0, tzinfo=PRAGUE),
     )
+    # Importing, full battery – must NOT force-charge from the battery.
     _states(
         hass, grid=500, batt=0, soc=90,
         switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
@@ -204,14 +207,24 @@ async def test_ev_away_lends_battery_when_forecast_refills(hass: HomeAssistant, 
     await hass.async_block_till_done()
     away = result["aways"][0]
     assert away["leave_at"].startswith("2026-10-01T15:00")
-    assert away["return_at"].startswith("2026-10-01T17:15")
     assert away["battery_lend_kwh"] > 1
-
+    assert coordinator.devices[device_id].away_releases_battery()
+    assert not coordinator.data.battery_priority
     data = coordinator.data.devices[device_id]
-    assert data["reason"] == "away_charging"
-    assert data["deadline_source"] == "away"
-    assert data["urgent"] is True
-    assert data["battery_lend_kwh"] > 1
+    assert data.get("urgent") is not True
+    assert data["reason"] != "away_charging"
+    assert ("turn_on", "switch.ev_charge", None) not in rec.calls
+
+    # Real surplus: car may take it (battery priority released).
+    rec.calls.clear()
+    hass.states.async_set("sensor.grid", "-3000")
+    hass.states.async_set("sensor.batt", "0")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert not coordinator.data.battery_priority
+    assert data["reason"] in ("charging", "starting")
+    assert data.get("urgent") is not True
     assert ("turn_on", "switch.ev_charge", None) in rec.calls
 
     await hass.services.async_call(
@@ -221,8 +234,8 @@ async def test_ev_away_lends_battery_when_forecast_refills(hass: HomeAssistant, 
     assert coordinator.devices[device_id].away is None
 
 
-async def test_ev_away_prefers_surplus_without_lend(hass: HomeAssistant, freezer) -> None:
-    """Low forecast: no battery discharge, but car still takes surplus before battery."""
+async def test_ev_away_keeps_battery_when_forecast_tight(hass: HomeAssistant, freezer) -> None:
+    """Low afternoon forecast: away does not steal from the house battery."""
     await hass.config.async_set_time_zone("Europe/Prague")
     rec = Recorder(hass)
     freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
@@ -231,7 +244,6 @@ async def test_ev_away_prefers_surplus_without_lend(hass: HomeAssistant, freezer
         datetime(2026, 10, 1, 18, 50, tzinfo=PRAGUE),
         datetime(2026, 10, 2, 7, 0, tzinfo=PRAGUE),
     )
-    # Surplus day-ish export, battery below target → normally battery first.
     _states(
         hass, grid=-3000, batt=3000, soc=40,
         switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
@@ -263,11 +275,67 @@ async def test_ev_away_prefers_surplus_without_lend(hass: HomeAssistant, freezer
 
     data = coordinator.data.devices[device_id]
     assert data.get("battery_lend_kwh", 0) == 0
-    assert data["reason"] != "away_charging"
-    assert coordinator.devices[device_id].minimum_pending is True
-    # With min_first, car gets the full budget (incl. what would charge the battery).
-    assert data["reason"] in ("charging", "starting")
+    assert not coordinator.devices[device_id].away_releases_battery()
+    assert not coordinator.devices[device_id].minimum_pending
+    assert coordinator.data.battery_priority
+    # Battery keeps the surplus (max charge 5 kW); car stays off.
+    assert ("turn_on", "switch.ev_charge", None) not in rec.calls
+    assert data["reason"] in ("waiting_for_surplus", "no_surplus")
+
+
+async def test_ev_away_outranks_boiler_when_forecast_refills(hass: HomeAssistant, freezer) -> None:
+    """Away + good forecast: car takes surplus before the boiler (frees ~2 kW)."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 12, 0, tzinfo=PRAGUE))
+    _sun(
+        hass, "above_horizon",
+        datetime(2026, 10, 1, 18, 50, tzinfo=PRAGUE),
+        datetime(2026, 10, 2, 7, 0, tzinfo=PRAGUE),
+    )
+    _states(
+        hass, grid=-3000, batt=0, soc=95,
+        switch__boiler="on", sensor__water="40",
+        switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
+        binary_sensor__ev_connected="on", sensor__car_soc="40", sensor__forecast="30",
+    )
+    boiler = _min_boiler(priority=1, deadline_hdo_only=False)
+    car = _ev(
+        priority=2,
+        ev_deadline_enabled=False,
+        ev_capacity_kwh=10.0,
+        ev_target_soc=80.0,
+    )
+    coordinator = await _setup(
+        hass,
+        _entry(
+            {
+                "night_target": False,
+                "forecast_remaining_today": "sensor.forecast",
+                "battery_target_soc": 90.0,
+            },
+            ("switched", boiler),
+            ("ev_charger", car),
+        ),
+    )
+    car_id = next(sid for sid, d in coordinator.devices.items() if d.kind == "ev_charger")
+    boiler_id = next(sid for sid, d in coordinator.devices.items() if d.kind == "switched")
+
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_away",
+        {"leave_at": "2026-10-01 15:00:00", "device_id": car_id},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+
+    assert coordinator.devices[car_id].away_releases_battery()
     assert ("turn_on", "switch.ev_charge", None) in rec.calls
+    assert ("turn_off", "switch.boiler", None) in rec.calls
+    assert coordinator.data.devices[car_id]["reason"] in ("charging", "starting")
+    assert coordinator.data.devices[boiler_id]["reason"] in (
+        "waiting_for_surplus", "no_surplus", "min_off_time",
+    )
 
 
 async def test_ev_away_clears_after_leave_when_unplugged(hass: HomeAssistant, freezer) -> None:

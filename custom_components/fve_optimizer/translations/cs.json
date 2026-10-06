@@ -728,6 +728,7 @@
           "waiting_for_hdo": "Čeká na HDO",
           "deadline_charging": "Nabíjí do termínu",
           "boost_charging": "Rychlé nabíjení",
+          "away_charging": "Nabíjí před odjezdem",
           "hold_until_deadline": "Drží ~80 % do termínu"
         }
       },

@@ -91,3 +91,46 @@ stop_ev_boost:
       name: Device id
       selector:
         text:
+set_ev_away:
+  name: Set EV away window
+  description: >
+    Plan when the car will leave. Until leave time the optimizer prefers charging
+    the car from surplus, and may move energy from the house battery when the
+    forecast says the battery will refill after departure. Optional return time
+    clears the plan automatically.
+  fields:
+    leave_at:
+      name: Leave at
+      description: When the car will disconnect / leave.
+      required: true
+      example: "2026-10-06 15:00:00"
+      selector:
+        datetime:
+    return_at:
+      name: Return at
+      description: Optional. When the car is expected back (clears the plan).
+      example: "2026-10-06 17:15:00"
+      selector:
+        datetime:
+    name:
+      name: Charger name
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
+clear_ev_away:
+  name: Clear EV away window
+  description: Cancel the planned EV absence.
+  fields:
+    name:
+      name: Charger name
+      example: EcoVolter
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:

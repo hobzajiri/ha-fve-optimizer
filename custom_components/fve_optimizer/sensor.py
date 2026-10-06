@@ -49,6 +49,7 @@ DEVICE_REASONS = [
     "waiting_for_hdo",
     "deadline_charging",
     "boost_charging",
+    "away_charging",
     "hold_until_deadline",
 ]
 

@@ -213,6 +213,59 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             supports_response=SupportsResponse.OPTIONAL,
         )
 
+    if not hass.services.has_service(DOMAIN, "set_ev_away"):
+
+        async def set_ev_away(call: ServiceCall) -> ServiceResponse:
+            """Plan EV absence: prefer car before leave (surplus + battery if refillable)."""
+            result = await _call_on_matching_entry(
+                hass,
+                lambda c: c.async_set_ev_away(
+                    leave_at=call.data["leave_at"],
+                    return_at=call.data.get("return_at"),
+                    device_id=call.data.get("device_id"),
+                    name=call.data.get("name"),
+                ),
+            )
+            return {"aways": [result]}
+
+        async def clear_ev_away(call: ServiceCall) -> ServiceResponse:
+            """Cancel a planned EV absence."""
+            result = await _call_on_matching_entry(
+                hass,
+                lambda c: c.async_clear_ev_away(
+                    device_id=call.data.get("device_id"),
+                    name=call.data.get("name"),
+                ),
+            )
+            return {"cleared": [result]}
+
+        hass.services.async_register(
+            DOMAIN,
+            "set_ev_away",
+            set_ev_away,
+            schema=vol.Schema(
+                {
+                    vol.Required("leave_at"): cv.datetime,
+                    vol.Optional("return_at"): cv.datetime,
+                    vol.Optional("device_id"): str,
+                    vol.Optional("name"): str,
+                }
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            "clear_ev_away",
+            clear_ev_away,
+            schema=vol.Schema(
+                {
+                    vol.Optional("device_id"): str,
+                    vol.Optional("name"): str,
+                }
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: FveOptimizerConfigEntry) -> bool:
     """Set up FVE Optimizer from a config entry."""

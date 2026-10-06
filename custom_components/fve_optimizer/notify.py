@@ -30,6 +30,7 @@ EVENT_FAILSAFE_CLEARED = "failsafe_cleared"
 EVENT_DEADLINE_RISK = "deadline_risk"
 EVENT_BOOST = "boost"
 EVENT_CHARGE_ORDER = "charge_order"
+EVENT_AWAY = "away"
 
 
 def _cs(hass: HomeAssistant) -> bool:

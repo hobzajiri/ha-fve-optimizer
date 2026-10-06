@@ -56,10 +56,12 @@ const T = {
     outlook: "Předpoklad dne", outlookHint: "Co Optimizer očekává do konce dne z predikce, termínů a HDO – ne AI odhad.",
     outlookSurplus: "jen při přebytku", outlookSolar: "pokryje slunce", outlookMet: "minimum splněno",
     outlookFrom: "od", aiOutlook: "Zbytek dne",
-    chargeOrder: "objednávka", boost: "rychlé nabíjení", eta: "hotovo cca",
+    chargeOrder: "objednávka", boost: "rychlé nabíjení", away: "odjezd", eta: "hotovo cca",
     orderSoc: "Cíl %", orderWhen: "Termín", orderCreate: "Objednat", orderClear: "Zrušit objednávku",
     boostStart: "Rychle teď", boostStop: "Stop rychlé",
-    holdHint: "Do 80 % dřív · 80–100 % až těsně před termínem · Rychlé nabíjení zruší objednávku",
+    awayLeave: "Odjezd", awayReturn: "Návrat", awaySet: "Naplánovat odjezd", awayClear: "Zrušit odjezd",
+    awayLend: "z baterie",
+    holdHint: "Do 80 % dřív · 80–100 % až těsně před termínem · Odjezd: přebytek (+ baterie dle predikce) dřív do auta",
     orderOpen: "Nabíjení", orderModalTitle: "Nabíjení auta", orderClose: "Zavřít",
     orderError: "Nepodařilo se uložit – zkus to znovu",
   },
@@ -110,10 +112,12 @@ const T = {
     outlook: "Today’s outlook", outlookHint: "What the Optimizer expects for the rest of the day from forecast, deadlines and HDO – not an AI guess.",
     outlookSurplus: "surplus only", outlookSolar: "covered by sun", outlookMet: "minimum met",
     outlookFrom: "from", aiOutlook: "Rest of day",
-    chargeOrder: "order", boost: "fast charge", eta: "ready ~",
+    chargeOrder: "order", boost: "fast charge", away: "away", eta: "ready ~",
     orderSoc: "Target %", orderWhen: "Deadline", orderCreate: "Order", orderClear: "Clear order",
     boostStart: "Fast now", boostStop: "Stop boost",
-    holdHint: "To 80 % earlier · 80–100 % only just before the deadline · Fast charge clears the order",
+    awayLeave: "Leave", awayReturn: "Return", awaySet: "Plan away", awayClear: "Clear away",
+    awayLend: "from battery",
+    holdHint: "To 80 % earlier · 80–100 % only just before the deadline · Away: surplus (+ battery if forecast refills) into the car first",
     orderOpen: "Charge", orderModalTitle: "EV charging", orderClose: "Close",
     orderError: "Could not save – try again",
   },
@@ -200,8 +204,10 @@ class FveOptimizerCard extends HTMLElement {
     if (this._evModalId) {
       const soc = root.querySelector?.(".ord-soc")?.value;
       const when = root.querySelector?.(".ord-when")?.value;
-      if (soc != null || when != null) {
-        this._evModalDraft = { id: this._evModalId, soc, when };
+      const leave = root.querySelector?.(".away-leave")?.value;
+      const ret = root.querySelector?.(".away-return")?.value;
+      if (soc != null || when != null || leave != null || ret != null) {
+        this._evModalDraft = { id: this._evModalId, soc, when, leave, ret };
       }
     }
     if (!d || !Array.isArray(d.devices)) {
@@ -425,6 +431,13 @@ class FveOptimizerCard extends HTMLElement {
           if (x.charging_h != null) bits.push(`${num(x.charging_h, 1)} h`);
           text = bits.join(" · ");
           cls = "warn";
+        } else if (x.mode === "away") {
+          const bits = [t.away];
+          if (x.deadline) bits.push(`${t.until} ${hhmm(x.deadline)}`);
+          if (x.target != null) bits.push(`${Math.round(x.target)} %`);
+          if (x.battery_lend_kwh > 0.05) bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
+          text = bits.join(" · ");
+          cls = "warn";
         } else if (x.mode === "deadline") {
           const bits = [];
           const target = x.target != null
@@ -513,6 +526,12 @@ class FveOptimizerCard extends HTMLElement {
       }
       if (x.boost?.soc != null) {
         det.push(`${t.boost} → ${Math.round(x.boost.soc)} %${x.deadline_eta ? ` · ${t.eta} ${hhmm(x.deadline_eta)}` : ""}`);
+      }
+      if (x.away?.leave_at) {
+        const bits = [`${t.away} ${hhmm(x.away.leave_at)}`];
+        if (x.away.return_at) bits.push(`→ ${hhmm(x.away.return_at)}`);
+        if (x.battery_lend_kwh > 0.05) bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
+        det.push(bits.join(" · "));
       }
       if (Array.isArray(x.plan) && x.plan.length) det.push(`${t.plan} ${x.plan.join(", ")}`);
       else if (typeof x.plan === "string" && x.plan) det.push(`${t.plan} ${x.plan}`);
@@ -631,6 +650,14 @@ class FveOptimizerCard extends HTMLElement {
             <div class="ev-row">
               <button type="button" class="btn" data-ev="boost">${t.boostStart}</button>
               <button type="button" class="btn warn" data-ev="stop-boost">${t.boostStop}</button>
+            </div>
+            <div class="ev-row">
+              <label>${t.awayLeave}<input type="datetime-local" class="away-leave"></label>
+              <label>${t.awayReturn}<input type="datetime-local" class="away-return"></label>
+            </div>
+            <div class="ev-row">
+              <button type="button" class="btn" data-ev="away">${t.awaySet}</button>
+              <button type="button" class="btn ghost" data-ev="clear-away">${t.awayClear}</button>
             </div>
             <div class="ev-err" hidden></div>
           </div>
@@ -756,6 +783,13 @@ class FveOptimizerCard extends HTMLElement {
       if (!actions) return;
       const socEl = actions.querySelector(".ord-soc");
       const whenEl = actions.querySelector(".ord-when");
+      const leaveEl = actions.querySelector(".away-leave");
+      const returnEl = actions.querySelector(".away-return");
+      const toLocal = (d) => {
+        try {
+          return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        } catch { return ""; }
+      };
       if (socEl) {
         socEl.value = draft?.soc != null && draft.soc !== ""
           ? draft.soc
@@ -769,13 +803,36 @@ class FveOptimizerCard extends HTMLElement {
             const base = x.charge_order?.deadline ? new Date(x.charge_order.deadline) : new Date(Date.now() + 86400000);
             base.setMinutes(0, 0, 0);
             if (!x.charge_order) base.setHours(7);
-            whenEl.value = new Date(base.getTime() - base.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+            whenEl.value = toLocal(base);
           } catch { whenEl.value = ""; }
+        }
+      }
+      if (leaveEl) {
+        if (draft?.leave) {
+          leaveEl.value = draft.leave;
+        } else if (x.away?.leave_at) {
+          leaveEl.value = toLocal(new Date(x.away.leave_at));
+        } else {
+          const leave = new Date();
+          leave.setMinutes(0, 0, 0);
+          leave.setHours(leave.getHours() + 3);
+          leaveEl.value = toLocal(leave);
+        }
+      }
+      if (returnEl) {
+        if (draft?.ret != null) {
+          returnEl.value = draft.ret;
+        } else if (x.away?.return_at) {
+          returnEl.value = toLocal(new Date(x.away.return_at));
+        } else {
+          returnEl.value = "";
         }
       }
       actions.querySelector('[data-ev="clear-order"]')?.toggleAttribute("hidden", !x.charge_order);
       actions.querySelector('[data-ev="stop-boost"]')?.toggleAttribute("hidden", !x.boost);
       actions.querySelector('[data-ev="boost"]')?.toggleAttribute("hidden", !!x.boost);
+      actions.querySelector('[data-ev="clear-away"]')?.toggleAttribute("hidden", !x.away);
+      actions.querySelector('[data-ev="away"]')?.toggleAttribute("hidden", !!x.away);
     };
     const openEvModal = (id, { useDraft = false } = {}) => {
       const x = devices.find((d) => d.id === id);
@@ -821,6 +878,8 @@ class FveOptimizerCard extends HTMLElement {
       const id = actions?.dataset.evid;
       const soc = Number(actions.querySelector(".ord-soc")?.value);
       const when = actions.querySelector(".ord-when")?.value;
+      const leave = actions.querySelector(".away-leave")?.value;
+      const ret = actions.querySelector(".away-return")?.value;
       btn.disabled = true;
       showEvErr("");
       let ok = true;
@@ -839,6 +898,16 @@ class FveOptimizerCard extends HTMLElement {
         ok = await callEv("start_ev_boost", data);
       } else if (act === "stop-boost") {
         ok = await callEv("stop_ev_boost", { device_id: id });
+      } else if (act === "away") {
+        if (!leave) { btn.disabled = false; return; }
+        const data = {
+          device_id: id,
+          leave_at: leave.replace("T", " ") + ":00",
+        };
+        if (ret) data.return_at = ret.replace("T", " ") + ":00";
+        ok = await callEv("set_ev_away", data);
+      } else if (act === "clear-away") {
+        ok = await callEv("clear_ev_away", { device_id: id });
       }
       if (!ok) btn.disabled = false;
     });

@@ -728,6 +728,7 @@
           "waiting_for_hdo": "Waiting for HDO",
           "deadline_charging": "Charging for deadline",
           "boost_charging": "Fast charging",
+          "away_charging": "Charging before departure",
           "hold_until_deadline": "Holding ~80 % until deadline"
         }
       },

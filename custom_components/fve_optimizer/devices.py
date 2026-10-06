@@ -724,6 +724,12 @@ class EvChargerDevice(ManagedDevice):
         self._order_completed: dict[str, Any] | None = None
         # Fast charge from now: full current until target SoC (ignores surplus/HDO).
         self._boost: dict[str, Any] | None = None
+        # Planned absence: leave_at / optional return_at – prioritize EV before leave.
+        self._away: dict[str, Any] | None = None
+        # House-battery kWh the coordinator allows to move into the EV before leave.
+        self.battery_lend_kwh: float = 0.0
+        # True this cycle when away mode is actively discharging the house battery.
+        self._away_lending: bool = False
 
     @property
     def min_a(self) -> int:
@@ -748,6 +754,7 @@ class EvChargerDevice(ManagedDevice):
             "target_soc_entity_last": self._target_soc_entity_last,
             "charge_order": self._charge_order,
             "boost": self._boost,
+            "away": self._away,
         })
         return data
 
@@ -778,6 +785,14 @@ class EvChargerDevice(ManagedDevice):
             self._boost = {"soc": float(boost["soc"])}
         else:
             self._boost = None
+        away = data.get("away")
+        if isinstance(away, dict) and away.get("leave_at"):
+            restored: dict[str, Any] = {"leave_at": str(away["leave_at"])}
+            if away.get("return_at"):
+                restored["return_at"] = str(away["return_at"])
+            self._away = restored
+        else:
+            self._away = None
 
     def set_charge_order(self, target_soc: float, deadline: datetime) -> dict[str, Any]:
         """One-shot: charge to ``target_soc`` by ``deadline`` (grid/HDO as needed)."""
@@ -826,6 +841,50 @@ class EvChargerDevice(ManagedDevice):
     def boost(self) -> dict[str, Any] | None:
         return dict(self._boost) if self._boost else None
 
+    def set_away(
+        self, leave_at: datetime, return_at: datetime | None = None
+    ) -> dict[str, Any]:
+        """Plan absence: fill the car before ``leave_at`` (surplus + lendable battery)."""
+        if leave_at.tzinfo is None:
+            leave_at = leave_at.replace(tzinfo=dt_util.now().tzinfo)
+        away: dict[str, Any] = {"leave_at": leave_at.isoformat()}
+        if return_at is not None:
+            if return_at.tzinfo is None:
+                return_at = return_at.replace(tzinfo=leave_at.tzinfo)
+            if return_at <= leave_at:
+                raise ValueError("return_at must be after leave_at")
+            away["return_at"] = return_at.isoformat()
+        self._away = away
+        return dict(self._away)
+
+    def clear_away(self) -> None:
+        self._away = None
+        self._away_lending = False
+        self.battery_lend_kwh = 0.0
+
+    @property
+    def away(self) -> dict[str, Any] | None:
+        return dict(self._away) if self._away else None
+
+    def _parse_away_time(self, key: str, now: datetime) -> datetime | None:
+        if not self._away or not self._away.get(key):
+            return None
+        raw = dt_util.parse_datetime(str(self._away[key]))
+        if raw is None:
+            return None
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=now.tzinfo)
+        return raw
+
+    def _away_pending(self, now: datetime) -> bool:
+        """Car is home today and will leave later – prefer surplus into the EV."""
+        leave = self._parse_away_time("leave_at", now)
+        if leave is None or leave.date() != now.date() or now >= leave:
+            return False
+        if not self._connected or self._ev_soc is None:
+            return False
+        return self._ev_soc < self.target_soc
+
     def _boost_eta(self, now: datetime, target: float) -> tuple[float, datetime | None]:
         """Return (hours_needed, eta) at max charger power, or (0, None) if done."""
         if self._ev_soc is None:
@@ -864,11 +923,68 @@ class EvChargerDevice(ManagedDevice):
         self._ev_soc = state_float(self.hass, self.config.get(CONF_EV_SOC_SENSOR))
 
     def update_deadline(self, now: datetime) -> float:
+        self._away_lending = False
         if self._boost_due(now):
+            self.status.urgent = True
+            return 0.0
+        if self._away_due(now):
             self.status.urgent = True
             return 0.0
         self.status.urgent = self._deadline_due(now)
         return self._solar_used
+
+    def _away_due(self, now: datetime) -> bool:
+        """Before leave: full-power charge from lendable house-battery energy.
+
+        Surplus preference without lending is handled by ``minimum_pending``.
+        Auto-clears when the return time passes, or after leave once unplugged.
+        """
+        if not self._away:
+            return False
+        leave = self._parse_away_time("leave_at", now)
+        ret = self._parse_away_time("return_at", now)
+        if leave is None:
+            self.clear_away()
+            return False
+        if ret is not None and now >= ret:
+            self.clear_away()
+            return False
+        if now >= leave and not self._connected:
+            self.clear_away()
+            return False
+        # Past leave but still plugged in – no forced discharge; keep the plan.
+        if now >= leave or leave.date() != now.date():
+            return False
+        if self._ev_soc is None or not self._connected:
+            return False
+        target = self.target_soc
+        if self._ev_soc >= target:
+            return False
+        lendable = max(float(self.battery_lend_kwh or 0.0), 0.0)
+        if lendable <= 0:
+            return False
+        need_kwh = (
+            max(target - self._ev_soc, 0.0) / 100 * self.cfg(CONF_EV_CAPACITY)
+            / self.cfg(CONF_EV_EFFICIENCY)
+        )
+        hours, eta = self._boost_eta(now, target)
+        self._away_lending = True
+        self._deadline_info = {
+            "soc": self._ev_soc,
+            "deadline": leave.isoformat(),
+            "deadline_eta": eta.isoformat() if eta else None,
+            "deadline_need_kwh": round(need_kwh, 2),
+            "deadline_solar_kwh": 0.0,
+            "deadline_grid_kwh": round(min(need_kwh, lendable), 2),
+            "deadline_charging_h": round(hours, 2),
+            "deadline_soc": target,
+            "deadline_source": "away",
+            "deadline_mode": "away",
+            "away": self.away,
+            "battery_lend_kwh": round(lendable, 2),
+        }
+        self._deadline_active = leave
+        return True
 
     def _boost_due(self, now: datetime) -> bool:
         """Fast charge from now at full power until the boost target SoC."""
@@ -923,6 +1039,7 @@ class EvChargerDevice(ManagedDevice):
             ),
             "charge_order": self.charge_order,
             "boost": self.boost,
+            "away": self.away,
             "connected": self._connected,
             "min_before_battery": bool(self.config.get(CONF_MIN_BEFORE_BATTERY)),
             "minimum_pending": self.minimum_pending,
@@ -940,6 +1057,21 @@ class EvChargerDevice(ManagedDevice):
                 "charging_h": info.get("deadline_charging_h"),
                 "eta": info.get("deadline_eta"),
                 "source": "boost",
+            })
+            return out
+        if self._away and self._away_pending(dt_util.now()):
+            leave = self._parse_away_time("leave_at", dt_util.now())
+            out.update({
+                "mode": "away",
+                "deadline": leave.isoformat() if leave else self._away.get("leave_at"),
+                "target": self.target_soc,
+                "deadline_mode": "away",
+                "need_kwh": info.get("deadline_need_kwh"),
+                "charging_h": info.get("deadline_charging_h"),
+                "eta": info.get("deadline_eta"),
+                "battery_lend_kwh": info.get("battery_lend_kwh", round(self.battery_lend_kwh, 2)),
+                "source": "away",
+                "away": self.away,
             })
             return out
         if self._charge_order and self._ev_soc is not None:
@@ -989,9 +1121,12 @@ class EvChargerDevice(ManagedDevice):
 
     @property
     def minimum_pending(self) -> bool:
-        if not bool(self.config.get(CONF_MIN_BEFORE_BATTERY)) or not bool(self._connected):
+        if not bool(self._connected) or self._ev_soc is None:
             return False
-        if self._ev_soc is None:
+        # Planned departure: always prefer surplus into the car before leave.
+        if self._away_pending(dt_util.now()):
+            return True
+        if not bool(self.config.get(CONF_MIN_BEFORE_BATTERY)):
             return False
         if self._charge_order and self._ev_soc < float(self._charge_order["soc"]):
             order_soc = float(self._charge_order["soc"])
@@ -1307,6 +1442,10 @@ class EvChargerDevice(ManagedDevice):
             "connected": self._connected,
             "charge_order": self.charge_order,
             "boost": self.boost,
+            "away": self.away,
+            "battery_lend_kwh": (
+                round(self.battery_lend_kwh, 2) if self._away else None
+            ),
         }
 
     def _damp(self, wanted: int, current: int, budget: float, phases: int, now: float) -> int:
@@ -1363,7 +1502,12 @@ class EvChargerDevice(ManagedDevice):
         headroom.consume(allocated - self._power(current_now or 0.0, phases), phases)
         status.active = True
         status.allocated_w = allocated
-        status.reason = "boost_charging" if self._boost else "deadline_charging"
+        if self._boost:
+            status.reason = "boost_charging"
+        elif self._away_lending:
+            status.reason = "away_charging"
+        else:
+            status.reason = "deadline_charging"
         status.extra = self._extra(phases, amps)
         return allocated
 

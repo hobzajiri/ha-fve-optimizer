@@ -76,6 +76,7 @@ from .const import (
 )
 from .hdo import HdoSchedule, settings_from_conf
 from .notify import (
+    EVENT_AWAY,
     EVENT_BOOST,
     EVENT_CHARGE_ORDER,
     EVENT_DEADLINE_RISK,
@@ -461,6 +462,69 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
         return max(remaining / self._f(CONF_FORECAST_SAFETY) - house_kw * self._hours_until_sunset(), 0.0)
 
+    def _away_lendable_kwh(
+        self,
+        snap: DispatchSnapshot,
+        soc: float,
+        leave_at: datetime,
+        house_w: float | None,
+    ) -> float:
+        """How many kWh may move from the house battery into the EV before leave.
+
+        Afternoon sun after leave (share of today's remaining forecast ÷ safety,
+        minus house load) must still cover returning the battery to the effective
+        target. Energy above that floor is lendable now.
+        """
+        remaining = self._read(CONF_FORECAST_REMAINING)
+        if remaining is None:
+            return 0.0
+        now = dt_util.now()
+        if leave_at.tzinfo is None:
+            leave_at = leave_at.replace(tzinfo=now.tzinfo)
+        if leave_at.date() != now.date() or now >= leave_at:
+            return 0.0
+        hours_sunset = self._hours_until_sunset()
+        if hours_sunset <= 0:
+            return 0.0
+        hours_to_leave = max((leave_at - now).total_seconds() / 3600, 0.0)
+        hours_after = max(hours_sunset - hours_to_leave, 0.0)
+        frac = hours_after / hours_sunset
+        house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
+        refillable = max(
+            remaining * frac / self._f(CONF_FORECAST_SAFETY) - house_kw * hours_after,
+            0.0,
+        )
+        capacity = self._f(CONF_BATTERY_CAPACITY_KWH)
+        if capacity <= 0:
+            return 0.0
+        target = snap.effective_target_soc
+        if target is None:
+            target = self._f(CONF_BATTERY_TARGET_SOC)
+        reserve = self._f(CONF_BATTERY_RESERVE_SOC)
+        min_soc = max(reserve, float(target) - refillable / capacity * 100)
+        return max((soc - min_soc) / 100 * capacity, 0.0)
+
+    def _prepare_away_lend(
+        self, snap: DispatchSnapshot, soc: float, house_w: float | None
+    ) -> None:
+        """Tell EV chargers how much house-battery energy they may take before leave."""
+        from .devices import EvChargerDevice  # noqa: PLC0415
+
+        now = dt_util.now()
+        for device in self.devices.values():
+            if not isinstance(device, EvChargerDevice):
+                continue
+            device.battery_lend_kwh = 0.0
+            away = device.away
+            if not away:
+                continue
+            leave = dt_util.parse_datetime(str(away["leave_at"]))
+            if leave is None:
+                continue
+            if leave.tzinfo is None:
+                leave = leave.replace(tzinfo=now.tzinfo)
+            device.battery_lend_kwh = self._away_lendable_kwh(snap, soc, leave, house_w)
+
     def _update_deadlines(
         self, snap: DispatchSnapshot, solar_kwh: float | None, battery_need_kwh: float
     ) -> None:
@@ -585,6 +649,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         snap.effective_target_soc = target_soc
         snap.forecast_covers_battery = covered
         snap.battery_priority = soc < target_soc
+        self._prepare_away_lend(snap, soc, base_house_w)
         self._update_deadlines(
             snap,
             self._solar_for_devices(base_house_w),
@@ -1022,6 +1087,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "deadline_chase_soc": d.status.extra.get("deadline_chase_soc"),
                     "charge_order": d.status.extra.get("charge_order"),
                     "boost": d.status.extra.get("boost"),
+                    "away": d.status.extra.get("away"),
+                    "battery_lend_kwh": d.status.extra.get("battery_lend_kwh"),
                     "legionella_due": d.status.extra.get("legionella_due"),
                     "connected": d.status.extra.get("connected"),
                     "plan": d.status.extra.get("deadline_plan"),
@@ -1524,6 +1591,54 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         await async_dismiss(self.hass, self, f"boost_{device.subentry_id}")
         return {"device": device.name, "id": device.subentry_id, "stopped": True}
 
+    async def async_set_ev_away(
+        self,
+        leave_at: datetime,
+        return_at: datetime | None = None,
+        device_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Plan EV absence: prefer car before leave (surplus + lendable battery)."""
+        device = self._ev_by_id_or_name(device_id, name)
+        away = device.set_away(leave_at, return_at)
+        self._save_state()
+        await self.async_request_refresh()
+        _LOGGER.info(
+            "%s: away leave %s return %s",
+            device.name,
+            away.get("leave_at"),
+            away.get("return_at"),
+        )
+        fire_event(
+            self.hass,
+            self,
+            EVENT_AWAY,
+            {"device_id": device.subentry_id, "device": device.name, "action": "set", **away},
+        )
+        extra = (self.data.devices.get(device.subentry_id) if self.data else {}) or {}
+        return {
+            "device": device.name,
+            "id": device.subentry_id,
+            **away,
+            "battery_lend_kwh": extra.get("battery_lend_kwh"),
+        }
+
+    async def async_clear_ev_away(
+        self, device_id: str | None = None, name: str | None = None
+    ) -> dict[str, Any]:
+        """Cancel a planned EV absence."""
+        device = self._ev_by_id_or_name(device_id, name)
+        device.clear_away()
+        self._save_state()
+        await self.async_request_refresh()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_AWAY,
+            {"device_id": device.subentry_id, "device": device.name, "action": "cleared"},
+        )
+        return {"device": device.name, "id": device.subentry_id, "cleared": True}
+
     async def _async_apply(self, active: list[ManagedDevice]) -> None:
         if self.dry_run:
             return  # "watch only": decisions are shown, nothing is switched
@@ -1710,6 +1825,7 @@ _SUMMARY_CS: dict[str, Any] = {
         "min_on_time": "min. doba zapnutí", "min_off_time": "min. doba vypnutí",
         "deadline_heating": "nahřívá do termínu", "deadline_charging": "nabíjí do termínu",
         "boost_charging": "rychlé nabíjení",
+        "away_charging": "nabíjí před odjezdem",
         "hold_until_deadline": "drží ~80 % do termínu",
         "breaker_limit": "omezeno jističem", "waiting_for_hdo": "čeká na HDO",
     },
@@ -1742,6 +1858,7 @@ _SUMMARY_EN: dict[str, Any] = {
         "min_on_time": "min on time", "min_off_time": "min off time",
         "deadline_heating": "heating for deadline", "deadline_charging": "charging for deadline",
         "boost_charging": "fast charging",
+        "away_charging": "charging before departure",
         "hold_until_deadline": "holding ~80 % until deadline",
         "breaker_limit": "breaker limit", "waiting_for_hdo": "waiting for HDO",
     },

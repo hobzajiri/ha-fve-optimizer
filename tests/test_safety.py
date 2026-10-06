@@ -157,6 +157,7 @@ async def test_device_reason_enum_includes_boost_and_hold() -> None:
 
     assert "boost_charging" in DEVICE_REASONS
     assert "away_charging" in DEVICE_REASONS
+    assert "away_deferred" in DEVICE_REASONS
     assert "hold_until_deadline" in DEVICE_REASONS
 
 

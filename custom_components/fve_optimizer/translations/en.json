@@ -729,6 +729,7 @@
           "deadline_charging": "Charging for deadline",
           "boost_charging": "Fast charging",
           "away_charging": "Charging before departure",
+          "away_deferred": "Deferred (EV away)",
           "hold_until_deadline": "Holding ~80 % until deadline"
         }
       },

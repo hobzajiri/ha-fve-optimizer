@@ -54,6 +54,8 @@ from .const import (
     CONF_HOUSE_POWER,
     CONF_INPUT_TIMEOUT,
     CONF_DRY_RUN,
+    CONF_EV_CAPACITY,
+    CONF_EV_EFFICIENCY,
     CONF_MAIN_BREAKER_A,
     CONF_MIN_BEFORE_BATTERY,
     CONF_NOMINAL_VOLTAGE,
@@ -462,59 +464,111 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
         return max(remaining / self._f(CONF_FORECAST_SAFETY) - house_kw * self._hours_until_sunset(), 0.0)
 
-    def _away_lendable_kwh(
+    def _away_boiler_need_kwh(self) -> float:
+        """kWh still needed to finish surplus/deadline heating on all boilers."""
+        from .devices import SwitchedDevice  # noqa: PLC0415
+
+        total = 0.0
+        for device in self.devices.values():
+            if not isinstance(device, SwitchedDevice) or not device.enabled:
+                continue
+            total += device.heat_need_kwh()
+        return total
+
+    def _away_energy_plan(
         self,
         snap: DispatchSnapshot,
         soc: float,
         leave_at: datetime,
         house_w: float | None,
-    ) -> float:
-        """How many kWh may move from the house battery into the EV before leave.
+        ev: Any,
+    ) -> dict[str, float | bool]:
+        """Estimate what may go into the EV before leave.
 
-        Afternoon sun after leave (share of today's remaining forecast ÷ safety,
-        minus house load) must still cover returning the battery to the effective
-        target. Energy above that floor is lendable now.
+        Afternoon sun after leave (forecast share ÷ safety − house) must still
+        cover bringing the house battery to target and reheating the boiler.
+        When it does, surplus (and lendable battery energy) prefers the car now.
         """
+        empty: dict[str, float | bool] = {
+            "lendable_kwh": 0.0,
+            "car_budget_kwh": 0.0,
+            "boiler_need_kwh": 0.0,
+            "afternoon_net_kwh": 0.0,
+            "prefers_car": False,
+        }
         remaining = self._read(CONF_FORECAST_REMAINING)
         if remaining is None:
-            return 0.0
+            return empty
         now = dt_util.now()
         if leave_at.tzinfo is None:
             leave_at = leave_at.replace(tzinfo=now.tzinfo)
         if leave_at.date() != now.date() or now >= leave_at:
-            return 0.0
+            return empty
         hours_sunset = self._hours_until_sunset()
         if hours_sunset <= 0:
-            return 0.0
+            return empty
         hours_to_leave = max((leave_at - now).total_seconds() / 3600, 0.0)
         hours_after = max(hours_sunset - hours_to_leave, 0.0)
-        frac = hours_after / hours_sunset
+        frac_after = hours_after / hours_sunset
         house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
-        refillable = max(
-            remaining * frac / self._f(CONF_FORECAST_SAFETY) - house_kw * hours_after,
+        safety = self._f(CONF_FORECAST_SAFETY)
+        afternoon_net = max(
+            remaining * frac_after / safety - house_kw * hours_after,
+            0.0,
+        )
+        solar_before = max(
+            remaining * (1.0 - frac_after) / safety - house_kw * hours_to_leave,
             0.0,
         )
         capacity = self._f(CONF_BATTERY_CAPACITY_KWH)
         if capacity <= 0:
-            return 0.0
+            return empty
         target = snap.effective_target_soc
         if target is None:
             target = self._f(CONF_BATTERY_TARGET_SOC)
         reserve = self._f(CONF_BATTERY_RESERVE_SOC)
-        min_soc = max(reserve, float(target) - refillable / capacity * 100)
-        return max((soc - min_soc) / 100 * capacity, 0.0)
+        battery_need = capacity * max(float(target) - soc, 0.0) / 100
+        boiler_need = self._away_boiler_need_kwh()
+        # Afternoon must cover battery refill + boiler reheat → free surplus for the car now.
+        prefers_car = afternoon_net + 1e-6 >= battery_need + boiler_need
+        available_for_battery = max(afternoon_net - boiler_need, 0.0)
+        min_soc = max(reserve, float(target) - available_for_battery / capacity * 100)
+        lendable = max((soc - min_soc) / 100 * capacity, 0.0)
+        car_room = 0.0
+        if getattr(ev, "_ev_soc", None) is not None:
+            try:
+                car_room = (
+                    max(float(ev.target_soc) - float(ev._ev_soc), 0.0)
+                    / 100
+                    * float(ev.cfg(CONF_EV_CAPACITY))
+                    / float(ev.cfg(CONF_EV_EFFICIENCY))
+                )
+            except (TypeError, ValueError, KeyError):
+                car_room = 0.0
+        car_budget = min(car_room, solar_before + lendable) if prefers_car else 0.0
+        return {
+            "lendable_kwh": lendable,
+            "car_budget_kwh": car_budget,
+            "boiler_need_kwh": boiler_need,
+            "afternoon_net_kwh": afternoon_net,
+            "prefers_car": prefers_car,
+        }
 
     def _prepare_away_lend(
         self, snap: DispatchSnapshot, soc: float, house_w: float | None
     ) -> None:
-        """Tell EV chargers how much house-battery energy they may take before leave."""
-        from .devices import EvChargerDevice  # noqa: PLC0415
+        """Apply away energy plan: prefer EV, defer boiler surplus when afternoon covers."""
+        from .devices import EvChargerDevice, SwitchedDevice  # noqa: PLC0415
 
         now = dt_util.now()
+        prefer_any = False
         for device in self.devices.values():
+            device.away_defer_surplus = False
             if not isinstance(device, EvChargerDevice):
                 continue
             device.battery_lend_kwh = 0.0
+            device.away_prefer = False
+            device.away_car_budget_kwh = 0.0
             away = device.away
             if not away:
                 continue
@@ -523,7 +577,17 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 continue
             if leave.tzinfo is None:
                 leave = leave.replace(tzinfo=now.tzinfo)
-            device.battery_lend_kwh = self._away_lendable_kwh(snap, soc, leave, house_w)
+            plan = self._away_energy_plan(snap, soc, leave, house_w, device)
+            device.battery_lend_kwh = float(plan["lendable_kwh"])
+            device.away_car_budget_kwh = float(plan["car_budget_kwh"])
+            device.away_prefer = bool(plan["prefers_car"])
+            if device.away_prefer and device._away_pending(now):
+                prefer_any = True
+        if prefer_any:
+            for device in self.devices.values():
+                if isinstance(device, SwitchedDevice) and device.enabled:
+                    # Urgent deadline / legionella still runs; surplus heating waits.
+                    device.away_defer_surplus = True
 
     def _update_deadlines(
         self, snap: DispatchSnapshot, solar_kwh: float | None, battery_need_kwh: float
@@ -1106,6 +1170,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "boost": d.status.extra.get("boost"),
                     "away": d.status.extra.get("away"),
                     "battery_lend_kwh": d.status.extra.get("battery_lend_kwh"),
+                    "car_budget_kwh": d.status.extra.get("car_budget_kwh"),
                     "legionella_due": d.status.extra.get("legionella_due"),
                     "connected": d.status.extra.get("connected"),
                     "plan": d.status.extra.get("deadline_plan"),
@@ -1843,6 +1908,7 @@ _SUMMARY_CS: dict[str, Any] = {
         "deadline_heating": "nahřívá do termínu", "deadline_charging": "nabíjí do termínu",
         "boost_charging": "rychlé nabíjení",
         "away_charging": "nabíjí před odjezdem",
+        "away_deferred": "odloženo (odjezd auta)",
         "hold_until_deadline": "drží ~80 % do termínu",
         "breaker_limit": "omezeno jističem", "waiting_for_hdo": "čeká na HDO",
     },
@@ -1876,6 +1942,7 @@ _SUMMARY_EN: dict[str, Any] = {
         "deadline_heating": "heating for deadline", "deadline_charging": "charging for deadline",
         "boost_charging": "fast charging",
         "away_charging": "charging before departure",
+        "away_deferred": "deferred (EV away)",
         "hold_until_deadline": "holding ~80 % until deadline",
         "breaker_limit": "breaker limit", "waiting_for_hdo": "waiting for HDO",
     },

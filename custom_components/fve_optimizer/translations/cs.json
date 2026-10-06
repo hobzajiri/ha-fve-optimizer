@@ -729,6 +729,7 @@
           "deadline_charging": "Nabíjí do termínu",
           "boost_charging": "Rychlé nabíjení",
           "away_charging": "Nabíjí před odjezdem",
+          "away_deferred": "Odloženo (odjezd auta)",
           "hold_until_deadline": "Drží ~80 % do termínu"
         }
       },

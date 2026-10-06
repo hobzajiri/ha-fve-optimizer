@@ -207,6 +207,8 @@ class ManagedDevice:
         self.hdo_schedule: Any = None
         # May round its power up by half a step from a full battery this cycle.
         self.borrow = False
+        # Away mode: defer surplus heating so the EV can take it before leave.
+        self.away_defer_surplus = False
         # Solar energy (kWh) this device can still expect today, None = no forecast.
         self.solar_kwh: float | None = None
         self._solar_used = 0.0
@@ -440,8 +442,22 @@ class SwitchedDevice(ManagedDevice):
             return max(maximum, self.cfg(CONF_LEGIONELLA_TEMPERATURE))
         return maximum
 
+    def heat_need_kwh(self, target: float | None = None) -> float:
+        """kWh to heat the tank from the current temperature to ``target``."""
+        if self._temperature is None:
+            return 0.0
+        if target is None:
+            if self.config.get(CONF_DEADLINE_ENABLED):
+                target = self.deadline_temperature
+            else:
+                target = self.max_temperature
+        delta_k = max(float(target) - self._temperature, 0.0)
+        return self.cfg(CONF_TANK_VOLUME) * WH_PER_LITRE_KELVIN * delta_k / 1000
+
     @property
     def minimum_pending(self) -> bool:
+        if self.away_defer_surplus:
+            return False
         return (
             bool(self.config.get(CONF_MIN_BEFORE_BATTERY))
             and bool(self.config.get(CONF_DEADLINE_ENABLED))
@@ -613,6 +629,9 @@ class SwitchedDevice(ManagedDevice):
         blocked = "unavailable" if self._is_on is None else None
         if not blocked and not status.urgent:
             blocked = self._blocked()
+        # Planned EV departure: afternoon sun will reheat – free surplus for the car.
+        if not blocked and not status.urgent and self.away_defer_surplus:
+            blocked = "away_deferred"
         status.wants_power = blocked is None
 
         if blocked:
@@ -728,6 +747,10 @@ class EvChargerDevice(ManagedDevice):
         self._away: dict[str, Any] | None = None
         # House-battery kWh the forecast can refill after leave (info + release battery).
         self.battery_lend_kwh: float = 0.0
+        # Afternoon sun covers battery refill + boiler – prefer the car until leave.
+        self.away_prefer: bool = False
+        # Estimated kWh that can go into the car before leave (display).
+        self.away_car_budget_kwh: float = 0.0
 
     @property
     def min_a(self) -> int:
@@ -858,6 +881,8 @@ class EvChargerDevice(ManagedDevice):
     def clear_away(self) -> None:
         self._away = None
         self.battery_lend_kwh = 0.0
+        self.away_prefer = False
+        self.away_car_budget_kwh = 0.0
 
     @property
     def away(self) -> dict[str, Any] | None:
@@ -898,9 +923,9 @@ class EvChargerDevice(ManagedDevice):
         return self._ev_soc < self.target_soc
 
     def away_releases_battery(self, now: datetime | None = None) -> bool:
-        """Forecast after leave can refill the house battery – free surplus for the car."""
+        """Afternoon forecast covers battery (+ boiler) after leave – prefer the car."""
         now = now or dt_util.now()
-        return self._away_pending(now) and float(self.battery_lend_kwh or 0.0) > 0.0
+        return self._away_pending(now) and bool(self.away_prefer)
 
     def _boost_eta(self, now: datetime, target: float) -> tuple[float, datetime | None]:
         """Return (hours_needed, eta) at max charger power, or (0, None) if done."""
@@ -1028,6 +1053,7 @@ class EvChargerDevice(ManagedDevice):
                 "target": self.target_soc,
                 "deadline_mode": "away",
                 "battery_lend_kwh": round(self.battery_lend_kwh, 2),
+                "car_budget_kwh": round(self.away_car_budget_kwh, 2),
                 "releases_battery": self.away_releases_battery(),
                 "source": "away",
                 "away": self.away,
@@ -1405,6 +1431,9 @@ class EvChargerDevice(ManagedDevice):
             "away": self.away,
             "battery_lend_kwh": (
                 round(self.battery_lend_kwh, 2) if self._away else None
+            ),
+            "car_budget_kwh": (
+                round(self.away_car_budget_kwh, 2) if self._away else None
             ),
         }
 

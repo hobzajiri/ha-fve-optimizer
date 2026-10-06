@@ -208,6 +208,7 @@ async def test_ev_away_releases_battery_for_surplus_not_forced_charge(
     away = result["aways"][0]
     assert away["leave_at"].startswith("2026-10-01T15:00")
     assert away["battery_lend_kwh"] > 1
+    assert coordinator.devices[device_id].away_prefer
     assert coordinator.devices[device_id].away_releases_battery()
     assert not coordinator.data.battery_priority
     data = coordinator.data.devices[device_id]
@@ -333,9 +334,8 @@ async def test_ev_away_outranks_boiler_when_forecast_refills(hass: HomeAssistant
     assert ("turn_on", "switch.ev_charge", None) in rec.calls
     assert ("turn_off", "switch.boiler", None) in rec.calls
     assert coordinator.data.devices[car_id]["reason"] in ("charging", "starting")
-    assert coordinator.data.devices[boiler_id]["reason"] in (
-        "waiting_for_surplus", "no_surplus", "min_off_time",
-    )
+    assert coordinator.data.devices[boiler_id]["reason"] == "away_deferred"
+    assert coordinator.devices[boiler_id].away_defer_surplus is True
 
 
 async def test_ev_away_clears_after_leave_when_unplugged(hass: HomeAssistant, freezer) -> None:

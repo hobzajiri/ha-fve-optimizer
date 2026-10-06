@@ -50,6 +50,7 @@ DEVICE_REASONS = [
     "deadline_charging",
     "boost_charging",
     "away_charging",
+    "away_deferred",
     "hold_until_deadline",
 ]
 

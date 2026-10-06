@@ -435,7 +435,8 @@ class FveOptimizerCard extends HTMLElement {
           const bits = [t.away];
           if (x.deadline) bits.push(`${t.until} ${hhmm(x.deadline)}`);
           if (x.target != null) bits.push(`${Math.round(x.target)} %`);
-          if (x.releases_battery && x.battery_lend_kwh > 0.05) {
+          if (x.car_budget_kwh > 0.05) bits.push(`→ ${num(x.car_budget_kwh)} kWh`);
+          else if (x.releases_battery && x.battery_lend_kwh > 0.05) {
             bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
           }
           text = bits.join(" · ");
@@ -532,7 +533,8 @@ class FveOptimizerCard extends HTMLElement {
       if (x.away?.leave_at) {
         const bits = [`${t.away} ${hhmm(x.away.leave_at)}`];
         if (x.away.return_at) bits.push(`→ ${hhmm(x.away.return_at)}`);
-        if (x.battery_lend_kwh > 0.05) bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
+        if (x.car_budget_kwh > 0.05) bits.push(`→ auto ${num(x.car_budget_kwh)} kWh`);
+        else if (x.battery_lend_kwh > 0.05) bits.push(`${t.awayLend} ${num(x.battery_lend_kwh)} kWh`);
         det.push(bits.join(" · "));
       }
       if (Array.isArray(x.plan) && x.plan.length) det.push(`${t.plan} ${x.plan.join(", ")}`);

@@ -6,6 +6,29 @@ execute_recommendation:
       selector:
         text:
 run_review:
+run_morning_brief:
+run_charge_forecast:
+ask_review:
+  fields:
+    question:
+      required: true
+      example: Proč navrhuješ delší off_delay_s?
+      selector:
+        text:
+apply_ai_proposal:
+  fields:
+    id:
+      required: true
+      example: a1b2c3d4e5f6
+      selector:
+        text:
+dismiss_ai_proposal:
+  fields:
+    id:
+      required: true
+      example: a1b2c3d4e5f6
+      selector:
+        text:
 set_ev_charge_order:
   name: Set EV charge order
   description: >

@@ -12,6 +12,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -34,6 +35,11 @@ from .const import (
     CONF_NIGHT_TARGET,
     CONF_BREAKER_MARGIN_A,
     BORROW_SOC_BAND,
+    CHARGE_FORECAST_INTERVAL_H,
+    CHARGE_FORECAST_LATEST_HOUR,
+    CONF_AI_CHARGE_FORECAST,
+    CONF_AI_MORNING_ENABLED,
+    CONF_AI_MORNING_TIME,
     CONF_AI_OUTLOOK_CHECK,
     CONF_AI_REVIEW_ENABLED,
     CONF_AI_REVIEW_TIME,
@@ -85,6 +91,7 @@ from .notify import (
     EVENT_FAILSAFE,
     EVENT_FAILSAFE_CLEARED,
     EVENT_OUTLOOK_CHECK,
+    EVENT_PROPOSAL_APPLIED,
     EVENT_REVIEW_DONE,
     async_dismiss,
     async_notify,
@@ -201,8 +208,14 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._open_recs: dict[str, dict[str, str]] = {}
         self._executed_recs: set[str] = set()
         self.reviews: list[dict[str, Any]] = []  # newest first
+        self._review_day_data: dict[str, Any] | None = None  # snapshot for discussion
+        self.morning_plan: dict[str, Any] | None = None  # today's morning baseline
+        self.charge_forecast: dict[str, Any] | None = None  # mid-day charge outlook
         self.review_error: str | None = None
         self.review_running = False
+        self.review_asking = False
+        self.morning_running = False
+        self.charge_running = False
         self._last_accounting: float | None = None
         self._save_due: float | None = None
         self._failsafe_logged = False
@@ -239,6 +252,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         }
         self._day = dict(self._saved_state.get("_day", {}))
         self.reviews = list(self._saved_state.get("_reviews", []))[:REVIEW_HISTORY]
+        for review in self.reviews:
+            review.setdefault("discussion", [])
+            review.setdefault("proposals", [])
+        self._review_day_data = self._saved_state.get("_review_day_data")
+        self.morning_plan = self._saved_state.get("_morning_plan")
+        self.charge_forecast = self._saved_state.get("_charge_forecast")
         export = self._saved_state.get("_export", {})
         self._export_raised_day = export.get("raised_day")
         self._export_lowered_day = export.get("lowered_day")
@@ -253,6 +272,9 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         state["_stats"] = self._stats
         state["_day"] = self._day
         state["_reviews"] = self.reviews
+        state["_review_day_data"] = self._review_day_data
+        state["_morning_plan"] = self.morning_plan
+        state["_charge_forecast"] = self.charge_forecast
         if state != self._saved_state:
             self._saved_state = state
             # Statistics change every cycle: write at most once a minute (the store
@@ -1122,13 +1144,18 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "dry_run": snap.dry_run,
             "recommendations": snap.recommendations,
             "log": self._decision_log,
-            "review": self.reviews[0] if self.reviews else None,
+            "review": self._review_for_ui(),
             "review_history": [
                 {"date": r.get("date"), "score": r.get("score")} for r in self.reviews
             ],
             "review_enabled": bool(self.conf.get(CONF_AI_TASK_ENTITY)),
             "review_running": self.review_running,
+            "review_asking": self.review_asking,
             "review_error": self.review_error,
+            "morning_plan": self.morning_plan_for_ui(),
+            "morning_running": self.morning_running,
+            "charge_forecast": self.charge_forecast_for_ui(),
+            "charge_running": self.charge_running,
             "stale_inputs": snap.stale_inputs,
             "stale": snap.reason in ("missing_input", "failsafe"),
             "headroom_a": None if snap.headroom_a is None else round(snap.headroom_a, 1),
@@ -1367,14 +1394,96 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 stats[key] = stats.get(key, 0.0) + value
                 stats["today"][key] = stats["today"].get(key, 0.0) + value
 
+    def _review_for_ui(self) -> dict[str, Any] | None:
+        """Latest review for the card (without the bulky day_data snapshot)."""
+        if not self.reviews:
+            return None
+        return {k: v for k, v in self.reviews[0].items() if k != "day_data"}
+
+    def morning_plan_for_ui(self) -> dict[str, Any] | None:
+        """Morning plan for the card (without the bulky numeric snapshot)."""
+        if not self.morning_plan:
+            return None
+        today = dt_util.now().date().isoformat()
+        if self.morning_plan.get("date") != today:
+            return None
+        return {k: v for k, v in self.morning_plan.items() if k != "snapshot"}
+
+    def morning_plan_for_ai(self) -> dict[str, Any] | None:
+        """Morning plan for evening review (full, same calendar day only)."""
+        if not self.morning_plan:
+            return None
+        today = dt_util.now().date().isoformat()
+        if self.morning_plan.get("date") != today:
+            return None
+        return self.morning_plan
+
+    def charge_forecast_for_ui(self) -> dict[str, Any] | None:
+        """Charge forecast for the card (without bulky snapshot)."""
+        if not self.charge_forecast:
+            return None
+        today = dt_util.now().date().isoformat()
+        if self.charge_forecast.get("date") != today:
+            return None
+        return {k: v for k, v in self.charge_forecast.items() if k != "snapshot"}
+
+    def charge_forecast_for_ai(self) -> dict[str, Any] | None:
+        """Full charge forecast for evening review (same calendar day)."""
+        if not self.charge_forecast:
+            return None
+        today = dt_util.now().date().isoformat()
+        if self.charge_forecast.get("date") != today:
+            return None
+        return self.charge_forecast
+
+    def _ai_busy(self) -> bool:
+        return (
+            self.review_running
+            or self.review_asking
+            or self.morning_running
+            or self.charge_running
+        )
+
+    def _sync_review_live(self) -> None:
+        """Push review / morning / charge flags into the current live_data for the card."""
+        if self.data is None:
+            return
+        live = self.data.live_data
+        live["review"] = self._review_for_ui()
+        live["review_history"] = [
+            {"date": r.get("date"), "score": r.get("score")} for r in self.reviews
+        ]
+        live["review_running"] = self.review_running
+        live["review_asking"] = self.review_asking
+        live["review_error"] = self.review_error
+        live["morning_plan"] = self.morning_plan_for_ui()
+        live["morning_running"] = self.morning_running
+        live["charge_forecast"] = self.charge_forecast_for_ui()
+        live["charge_running"] = self.charge_running
+        if self._last_live_data is not None:
+            self._last_live_data.update(
+                {
+                    "review": live["review"],
+                    "review_history": live["review_history"],
+                    "review_running": self.review_running,
+                    "review_asking": self.review_asking,
+                    "review_error": self.review_error,
+                    "morning_plan": live["morning_plan"],
+                    "morning_running": self.morning_running,
+                    "charge_forecast": live["charge_forecast"],
+                    "charge_running": self.charge_running,
+                }
+            )
+        self.async_update_listeners()
+
     async def async_run_review(self) -> dict[str, Any]:
         """Run the AI review now (scheduled or on request) and keep it."""
         from .review import async_review  # noqa: PLC0415 - avoid an import cycle
 
         self.review_running = True
-        self.async_update_listeners()
+        self._sync_review_live()
         try:
-            review = await async_review(self)
+            review, day_data = await async_review(self)
         except Exception as err:
             self.review_error = str(err)
             _LOGGER.warning("AI review failed: %s", err)
@@ -1382,9 +1491,11 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         finally:
             self.review_running = False
         self.review_error = None
+        self._review_day_data = day_data
         self.reviews = [review, *self.reviews][:REVIEW_HISTORY]
         self._save_state()
         await self.async_request_refresh()
+        self._sync_review_live()
         fire_event(
             self.hass,
             self,
@@ -1394,6 +1505,15 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 "score": review.get("score"),
                 "summary": review.get("summary"),
                 "suggestions": review.get("suggestions"),
+                "proposals": [
+                    {
+                        "id": p.get("id"),
+                        "target": p.get("target"),
+                        "key": p.get("key"),
+                        "status": p.get("status"),
+                    }
+                    for p in (review.get("proposals") or [])
+                ],
                 "problems": review.get("problems"),
                 "outlook": review.get("outlook"),
             },
@@ -1411,6 +1531,108 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             )
         return review
 
+    async def async_ask_review(self, question: str) -> dict[str, Any]:
+        """Ask a follow-up about the latest review; append to its discussion thread."""
+        from .review import (  # noqa: PLC0415
+            DISCUSSION_MAX_TURNS,
+            async_ask_review,
+            build_day_data,
+        )
+
+        if self._ai_busy():
+            raise HomeAssistantError("Review AI is already busy")
+        self.review_asking = True
+        self.review_error = None
+        self._sync_review_live()
+        try:
+            day_data = self._review_day_data
+            if day_data is None or (
+                self.reviews and day_data.get("date") != self.reviews[0].get("date")
+            ):
+                day_data = build_day_data(self)
+                self._review_day_data = day_data
+            turn = await async_ask_review(self, question, day_data)
+        except Exception as err:
+            self.review_error = str(err)
+            _LOGGER.warning("AI review discuss failed: %s", err)
+            raise
+        finally:
+            self.review_asking = False
+        thread = list(self.reviews[0].get("discussion") or [])
+        thread.append(turn)
+        self.reviews[0]["discussion"] = thread[-DISCUSSION_MAX_TURNS:]
+        self._save_state()
+        await self.async_request_refresh()
+        self._sync_review_live()
+        return turn
+
+    def _find_proposal(self, proposal_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not self.reviews:
+            raise HomeAssistantError("No review to apply a proposal from")
+        pid = (proposal_id or "").strip()
+        if not pid:
+            raise HomeAssistantError("Proposal id is required")
+        for prop in self.reviews[0].get("proposals") or []:
+            if prop.get("id") == pid:
+                return self.reviews[0], prop
+        raise HomeAssistantError(f"Unknown proposal id: {pid}")
+
+    def _write_proposal_value(self, prop: dict[str, Any]) -> None:
+        """Persist a validated proposal into entry options / device subentry."""
+        key = prop["key"]
+        value = prop["to"]
+        entry = self.config_entry
+        if prop.get("scope") == "hub":
+            options = {**entry.data, **entry.options, key: value}
+            self.hass.config_entries.async_update_entry(entry, options=options)
+            return
+        sid = prop.get("subentry_id")
+        if not sid or sid not in entry.subentries:
+            raise HomeAssistantError("Proposal device no longer exists")
+        subentry = entry.subentries[sid]
+        self.hass.config_entries.async_update_subentry(
+            entry, subentry, data={**subentry.data, key: value}
+        )
+
+    async def async_apply_proposal(self, proposal_id: str) -> dict[str, Any]:
+        """Apply one pending AI setting proposal (never switches devices)."""
+        if self._ai_busy():
+            raise HomeAssistantError("Review AI is already busy")
+        _review, prop = self._find_proposal(proposal_id)
+        if prop.get("status") != "pending":
+            raise HomeAssistantError(f"Proposal is not pending ({prop.get('status')})")
+        self._write_proposal_value(prop)
+        prop["status"] = "applied"
+        prop["applied_at"] = dt_util.now().isoformat()
+        self._save_state()
+        await self.async_request_refresh()
+        self._sync_review_live()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_PROPOSAL_APPLIED,
+            {
+                "id": prop.get("id"),
+                "target": prop.get("target"),
+                "key": prop.get("key"),
+                "from": prop.get("from"),
+                "to": prop.get("to"),
+                "reason": prop.get("reason"),
+            },
+        )
+        return prop
+
+    async def async_dismiss_proposal(self, proposal_id: str) -> dict[str, Any]:
+        """Mark a pending AI setting proposal as dismissed (no conf change)."""
+        _review, prop = self._find_proposal(proposal_id)
+        if prop.get("status") != "pending":
+            raise HomeAssistantError(f"Proposal is not pending ({prop.get('status')})")
+        prop["status"] = "dismissed"
+        prop["dismissed_at"] = dt_util.now().isoformat()
+        self._save_state()
+        self._sync_review_live()
+        return prop
+
     async def async_scheduled_review(self, now: datetime) -> None:
         """Called every minute: run the review once a day at the configured time."""
         if not self.conf.get(CONF_AI_TASK_ENTITY) or not self.conf.get(CONF_AI_REVIEW_ENABLED):
@@ -1424,6 +1646,120 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         try:
             await self.async_run_review()
         except Exception:  # noqa: BLE001 - logged in async_run_review
+            pass
+
+    async def async_run_morning_brief(self) -> dict[str, Any]:
+        """Run the morning AI day plan now and keep it as today's baseline."""
+        from .review import async_morning_brief  # noqa: PLC0415
+
+        if self._ai_busy():
+            raise HomeAssistantError("Review AI is already busy")
+        self.morning_running = True
+        self.review_error = None
+        self._sync_review_live()
+        try:
+            plan = await async_morning_brief(self)
+        except Exception as err:
+            self.review_error = str(err)
+            _LOGGER.warning("AI morning brief failed: %s", err)
+            raise
+        finally:
+            self.morning_running = False
+        self.review_error = None
+        self.morning_plan = plan
+        self._save_state()
+        await self.async_request_refresh()
+        self._sync_review_live()
+        # First charge forecast right after the morning baseline.
+        if self.conf.get(CONF_AI_CHARGE_FORECAST):
+            try:
+                await self.async_run_charge_forecast()
+            except Exception:  # noqa: BLE001 - logged in async_run_charge_forecast
+                pass
+        return plan
+
+    async def async_scheduled_morning(self, now: datetime) -> None:
+        """Called every minute: morning brief once a day at the configured time."""
+        if not self.conf.get(CONF_AI_TASK_ENTITY) or not self.conf.get(CONF_AI_MORNING_ENABLED):
+            return
+        at = dt_util.parse_time(str(self.conf.get(CONF_AI_MORNING_TIME) or ""))
+        local = dt_util.as_local(now)
+        if at is None or (local.hour, local.minute) != (at.hour, at.minute):
+            return
+        if self.morning_plan and self.morning_plan.get("date") == local.date().isoformat():
+            return
+        try:
+            await self.async_run_morning_brief()
+        except Exception:  # noqa: BLE001 - logged in async_run_morning_brief
+            pass
+
+    async def async_run_charge_forecast(self) -> dict[str, Any]:
+        """Refresh the mid-day AI charge forecast (does not touch morning_plan)."""
+        from .review import async_charge_forecast  # noqa: PLC0415
+
+        if self._ai_busy():
+            raise HomeAssistantError("Review AI is already busy")
+        self.charge_running = True
+        self.review_error = None
+        self._sync_review_live()
+        try:
+            forecast = await async_charge_forecast(self)
+        except Exception as err:
+            self.review_error = str(err)
+            _LOGGER.warning("AI charge forecast failed: %s", err)
+            raise
+        finally:
+            self.charge_running = False
+        self.review_error = None
+        self.charge_forecast = forecast
+        self._save_state()
+        await self.async_request_refresh()
+        self._sync_review_live()
+        return forecast
+
+    def _charge_forecast_slot_due(self, now: datetime) -> bool:
+        """True on a 3 h boundary after morning time, until sunset or 18:00."""
+        morning = dt_util.parse_time(str(self.conf.get(CONF_AI_MORNING_TIME) or "07:00:00"))
+        if morning is None:
+            return False
+        local = dt_util.as_local(now)
+        if (local.hour, local.minute) == (morning.hour, morning.minute):
+            return False  # morning brief owns this slot
+        if local.minute != morning.minute:
+            return False
+        start = local.replace(hour=morning.hour, minute=morning.minute, second=0, microsecond=0)
+        if local <= start:
+            return False
+        delta_h = (local - start).total_seconds() / 3600
+        if delta_h < CHARGE_FORECAST_INTERVAL_H - 0.01:
+            return False
+        if abs(delta_h % CHARGE_FORECAST_INTERVAL_H) > 0.05:
+            return False
+        latest = local.replace(
+            hour=CHARGE_FORECAST_LATEST_HOUR, minute=morning.minute, second=0, microsecond=0
+        )
+        if local > latest:
+            return False
+        snap = self.data
+        if snap and snap.hours_until_sunset is not None and snap.hours_until_sunset <= 0:
+            return False
+        if self.charge_forecast and self.charge_forecast.get("date") == local.date().isoformat():
+            at = dt_util.parse_datetime(str(self.charge_forecast.get("at") or ""))
+            if at is not None:
+                at_local = dt_util.as_local(at)
+                if (at_local.hour, at_local.minute) == (local.hour, local.minute):
+                    return False
+        return True
+
+    async def async_scheduled_charge_forecast(self, now: datetime) -> None:
+        """Called every minute: refresh charge forecast every 3 h after morning."""
+        if not self.conf.get(CONF_AI_TASK_ENTITY) or not self.conf.get(CONF_AI_CHARGE_FORECAST):
+            return
+        if not self._charge_forecast_slot_due(now):
+            return
+        try:
+            await self.async_run_charge_forecast()
+        except Exception:  # noqa: BLE001 - logged in async_run_charge_forecast
             pass
 
     def today(self) -> dict[str, Any]:

@@ -65,8 +65,17 @@ CONF_DRY_RUN: Final = "dry_run"  # compute and show, never switch anything
 CONF_AI_TASK_ENTITY: Final = "ai_task_entity"
 CONF_AI_REVIEW_ENABLED: Final = "ai_review_enabled"
 CONF_AI_REVIEW_TIME: Final = "ai_review_time"
+# Morning AI day plan (same AI Task) – baseline for evening comparison
+CONF_AI_MORNING_ENABLED: Final = "ai_morning_enabled"
+CONF_AI_MORNING_TIME: Final = "ai_morning_time"
+# Mid-day AI charge forecast (battery / boiler / EV) – refreshable during the day
+CONF_AI_CHARGE_FORECAST: Final = "ai_charge_forecast_enabled"
 # Mid-day AI advice when a deadline becomes at_risk (uses the same AI Task entity)
 CONF_AI_OUTLOOK_CHECK: Final = "ai_outlook_check"
+# Hours between automatic charge-forecast refreshes (from morning time).
+CHARGE_FORECAST_INTERVAL_H: Final = 3
+# Do not auto-refresh after this local hour (sunset may end earlier).
+CHARGE_FORECAST_LATEST_HOUR: Final = 18
 
 # Notifications (notify.* service and/or persistent_notification) + always-on events
 CONF_NOTIFY_SERVICE: Final = "notify_service"  # e.g. mobile_app_pixel or notify.telegram
@@ -107,6 +116,9 @@ DEFAULTS: Final[dict[str, object]] = {
     CONF_DRY_RUN: False,
     CONF_AI_REVIEW_ENABLED: True,
     CONF_AI_REVIEW_TIME: "21:00:00",
+    CONF_AI_MORNING_ENABLED: True,
+    CONF_AI_MORNING_TIME: "07:00:00",
+    CONF_AI_CHARGE_FORECAST: True,
     CONF_AI_OUTLOOK_CHECK: True,
     CONF_PERSISTENT_NOTIFICATION: True,
     CONF_NOTIFY_ON_REVIEW: True,
@@ -268,6 +280,9 @@ HUB_TUNABLES: Final[tuple[Tunable, ...]] = (
     Tunable(CONF_DRY_RUN, kind="switch"),
     Tunable(CONF_AI_REVIEW_ENABLED, kind="switch", requires=CONF_AI_TASK_ENTITY),
     Tunable(CONF_AI_REVIEW_TIME, kind="time", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_AI_MORNING_ENABLED, kind="switch", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_AI_MORNING_TIME, kind="time", requires=CONF_AI_TASK_ENTITY),
+    Tunable(CONF_AI_CHARGE_FORECAST, kind="switch", requires=CONF_AI_TASK_ENTITY),
     Tunable(CONF_AI_OUTLOOK_CHECK, kind="switch", requires=CONF_AI_TASK_ENTITY),
     Tunable(CONF_PERSISTENT_NOTIFICATION, kind="switch"),
     Tunable(CONF_NOTIFY_ON_REVIEW, kind="switch"),

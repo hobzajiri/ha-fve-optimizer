@@ -4,13 +4,12 @@
  * Finds the integration's entities in the entity registry (by platform and
  * translation key, so entity IDs / languages / areas do not matter) and lays
  * out standard Home Assistant cards around the FVE Optimizer card:
- * power flow + recommendations, decision timeline, power history, decision
- * log, control switches and the settings of every managed device.
+ * overview, power history + decision logbook, stats, AI review, settings.
  */
 
 const L = {
   cs: {
-    title: "FVE Optimizer", timeline: "Rozhodnutí (24 h)", power: "Výkon (6 h)", log: "Historie rozhodnutí",
+    title: "FVE Optimizer", power: "Výkon (24 h)", log: "Rozhodnutí (24 h)",
     control: "Řízení", settings: "Nastavení", costs: "Náklady po dnech (Kč)", energy: "Energie po dnech podle zdroje",
     tabOverview: "Přehled", tabHistory: "Historie", tabStats: "Statistiky", tabReview: "Hodnocení",
     reviewLog: "Hodnocení za 14 dní", noEntry: "FVE Optimizer zatím není nastavený.",
@@ -18,7 +17,7 @@ const L = {
     loading: "Načítám…", retry: "Zkusit znovu",
   },
   en: {
-    title: "FVE Optimizer", timeline: "Decisions (24 h)", power: "Power (6 h)", log: "Decision history",
+    title: "FVE Optimizer", power: "Power (24 h)", log: "Decisions (24 h)",
     control: "Control", settings: "Settings", costs: "Cost per day", energy: "Energy per day by source",
     tabOverview: "Overview", tabHistory: "History", tabStats: "Statistics", tabReview: "Review",
     reviewLog: "Reviews (14 days)", noEntry: "FVE Optimizer is not set up yet.",
@@ -175,14 +174,10 @@ class FveOptimizerPanel extends HTMLElement {
       },
       {
         key: "history", title: t.tabHistory, columns: [
-          [
-            { type: "history-graph", title: t.timeline, hours_to_show: 24,
-              entities: ids(hub.status, hub.battery_priority, hub.export_limit_raised, hub.hdo,
-                ...devList.map((d) => d.ents.reason)) },
-            { type: "history-graph", title: t.power, hours_to_show: 6,
-              entities: ids(hub.budget, hub.allocated, ...devList.map((d) => d.ents.allocated)) },
-          ],
-          [{ type: "logbook", title: t.log, hours_to_show: 24, entities: ids(hub.last_decision, hub.recommendations) }],
+          [{ type: "history-graph", title: t.power, hours_to_show: 24,
+            entities: ids(hub.budget, hub.allocated, ...devList.map((d) => d.ents.allocated)) }],
+          [{ type: "logbook", title: t.log, hours_to_show: 24,
+            entities: ids(hub.last_decision, hub.recommendations) }],
         ],
       },
       {

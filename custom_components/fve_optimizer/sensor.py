@@ -164,9 +164,27 @@ class HubSensor(FveOptimizerEntity, SensorEntity):
         if self.entity_description.key == "ai_review":
             latest = self.coordinator.reviews[0] if self.coordinator.reviews else {}
             return {
-                **{k: latest.get(k) for k in ("date", "at", "summary", "good", "problems", "suggestions", "outlook", "entity_id")},
+                **{
+                    k: latest.get(k)
+                    for k in (
+                        "date",
+                        "at",
+                        "summary",
+                        "good",
+                        "problems",
+                        "suggestions",
+                        "outlook",
+                        "entity_id",
+                        "discussion",
+                    )
+                },
                 "history": [{"date": r.get("date"), "score": r.get("score")} for r in self.coordinator.reviews],
                 "error": self.coordinator.review_error,
+                "asking": self.coordinator.review_asking,
+                "morning_plan": self.coordinator.morning_plan_for_ui(),
+                "morning_running": self.coordinator.morning_running,
+                "charge_forecast": self.coordinator.charge_forecast_for_ui(),
+                "charge_running": self.coordinator.charge_running,
             }
         if self.entity_description.key == "recommendations":
             return {"items": snap.recommendations}

@@ -80,6 +80,9 @@
           "ai_task_entity": "AI for the daily review (optional)",
           "ai_review_enabled": "AI review",
           "ai_review_time": "AI review time",
+          "ai_morning_enabled": "Morning AI day plan",
+          "ai_morning_time": "Morning plan time",
+          "ai_charge_forecast_enabled": "Mid-day charge forecast",
           "ai_outlook_check": "AI advice when a deadline is at risk",
           "notify_service": "Notify service (optional)",
           "persistent_notification": "Persistent HA notifications",
@@ -105,6 +108,8 @@
           "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
           "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
           "ai_review_enabled": "Every day at the set time.",
+          "ai_morning_enabled": "In the morning, prepare a production / day plan baseline for the evening comparison.",
+          "ai_charge_forecast_enabled": "During the day, refresh an AI forecast of battery / boiler / EV charge (every 3 h until ~18:00). Does not overwrite the morning plan.",
           "ai_outlook_check": "When a boiler/EV deadline becomes at risk, ask the same AI for a short mid-day tip (at most once per device per day).",
           "notify_service": "Home Assistant notify service without domain, e.g. mobile_app_pixel or telegram. Leave empty to use only persistent notifications / events.",
           "persistent_notification": "Also create notifications in Settings → Notifications.",
@@ -261,6 +266,9 @@
           "ai_task_entity": "AI for the daily review (optional)",
           "ai_review_enabled": "AI review",
           "ai_review_time": "AI review time",
+          "ai_morning_enabled": "Morning AI day plan",
+          "ai_morning_time": "Morning plan time",
+          "ai_charge_forecast_enabled": "Mid-day charge forecast",
           "ai_outlook_check": "AI advice when a deadline is at risk",
           "notify_service": "Notify service (optional)",
           "persistent_notification": "Persistent HA notifications",
@@ -286,6 +294,8 @@
           "dry_run": "The integration computes, logs and shows decisions but switches nothing and writes no export limit. For trying it on a real installation.",
           "ai_task_entity": "AI Task entity, e.g. from the Google Generative AI or Anthropic integration. Reviews the decisions every day and suggests setting changes – it changes nothing itself.",
           "ai_review_enabled": "Every day at the set time.",
+          "ai_morning_enabled": "In the morning, prepare a production / day plan baseline for the evening comparison.",
+          "ai_charge_forecast_enabled": "During the day, refresh an AI forecast of battery / boiler / EV charge (every 3 h until ~18:00). Does not overwrite the morning plan.",
           "ai_outlook_check": "When a boiler/EV deadline becomes at risk, ask the same AI for a short mid-day tip (at most once per device per day).",
           "notify_service": "Home Assistant notify service without domain, e.g. mobile_app_pixel or telegram. Leave empty to use only persistent notifications / events.",
           "persistent_notification": "Also create notifications in Settings → Notifications.",
@@ -655,6 +665,12 @@
       "ai_review_enabled": {
         "name": "AI review"
       },
+      "ai_morning_enabled": {
+        "name": "Morning AI day plan"
+      },
+      "ai_charge_forecast_enabled": {
+        "name": "Mid-day charge forecast"
+      },
       "ai_outlook_check": {
         "name": "AI advice on deadline risk"
       },
@@ -936,11 +952,20 @@
       },
       "ai_review_time": {
         "name": "AI review time"
+      },
+      "ai_morning_time": {
+        "name": "Morning plan time"
       }
     },
     "button": {
       "review_now": {
         "name": "Review now"
+      },
+      "morning_brief": {
+        "name": "Prepare day plan"
+      },
+      "charge_forecast": {
+        "name": "Refresh charge forecast"
       }
     }
   },
@@ -958,6 +983,44 @@
     "run_review": {
       "name": "Run AI review",
       "description": "Let the selected AI review today's decisions now."
+    },
+    "run_morning_brief": {
+      "name": "Prepare morning day plan",
+      "description": "Ask the AI for today's production / day plan baseline for the evening comparison."
+    },
+    "run_charge_forecast": {
+      "name": "Refresh charge forecast",
+      "description": "Ask the AI for an updated mid-day forecast of battery / boiler / EV charge. Does not change the morning plan."
+    },
+    "ask_review": {
+      "name": "Ask about AI review",
+      "description": "Ask a follow-up about the latest daily review. The AI changes nothing.",
+      "fields": {
+        "question": {
+          "name": "Question",
+          "description": "E.g. why longer off_delay_s was suggested, or whether a shorter one is fine."
+        }
+      }
+    },
+    "apply_ai_proposal": {
+      "name": "Apply AI setting proposal",
+      "description": "Apply one pending AI tunable change by id. Does not switch devices.",
+      "fields": {
+        "id": {
+          "name": "Proposal ID",
+          "description": "ID from the review proposals list / card."
+        }
+      }
+    },
+    "dismiss_ai_proposal": {
+      "name": "Dismiss AI setting proposal",
+      "description": "Dismiss one pending AI tunable proposal without changing settings.",
+      "fields": {
+        "id": {
+          "name": "Proposal ID",
+          "description": "ID from the review proposals list / card."
+        }
+      }
     }
   }
 }

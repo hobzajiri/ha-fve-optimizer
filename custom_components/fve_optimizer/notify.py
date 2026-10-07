@@ -24,6 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Event types: hass.bus fires ``fve_optimizer_<name>``.
 EVENT_REVIEW_DONE = "review_done"
+EVENT_PROPOSAL_APPLIED = "proposal_applied"
 EVENT_OUTLOOK_CHECK = "outlook_check"
 EVENT_FAILSAFE = "failsafe"
 EVENT_FAILSAFE_CLEARED = "failsafe_cleared"

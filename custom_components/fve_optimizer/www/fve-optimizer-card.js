@@ -30,6 +30,9 @@ const T = {
     setTo: "nastavit", inProgress: "provádí se", manualHint: "Doporučení proveď ručně",
     until: "do", then: "pak", price: "Cena", today: "dnes", notControlled: "neřízeno",
     available: "Návrh", availableHint: "Kolik chce Optimizer dát řízeným zařízením. Zahrnuje i výkon, který už teď berou (ten se jim může sebrat a přerozdělit) – proto může být návrh větší než samotný přetok do sítě.",
+    budgetPartDevices: "řízená zařízení", budgetPartExport: "přetok", budgetPartImport: "odběr ze sítě",
+    budgetPartBattery: "baterie", budgetPartReserved: "rezerva pro baterii", budgetPartReserve: "rezerva",
+    budgetPartEq: "návrh",
     allocatedRow: "Rozděleno", allocatedHint: "Součet výkonu, který Optimizer právě navrhuje řízeným zařízením.",
     rest: "zbytek", restHint: "Co z návrhu zařízení nevyužijí – zůstane baterii nebo půjde do sítě.",
     toBattery: "baterii", toBatteryGrid: "baterii / síť",
@@ -51,7 +54,18 @@ const T = {
     realOff: "vypnuto", realOn: "zapnuto", realRun: "běží", realCharge: "nabíjí",
     review: "AI hodnocení", reviewNow: "Vyhodnotit nyní", reviewing: "Vyhodnocuji…", noReview: "Zatím žádné hodnocení.",
     reviewOff: "AI hodnocení není nastavené – vyber AI Task entitu v nastavení FVE Optimizeru (krok Řízení).",
+    reviewAsk: "Zeptat se", reviewAsking: "Odpovídám…", reviewAskPlaceholder: "Otázka k hodnocení…",
+    reviewYou: "Ty", reviewAi: "AI",
+    morningPlan: "Ranní předpoklad", morningNow: "Připravit předpoklad", morningRunning: "Připravuji…",
+    morningNone: "Zatím žádný předpoklad na dnešek.",
+    morningExpect: "Očekávání", morningRisks: "Rizika",
+    chargeForecast: "Aktuální předpověď nabití", chargeNow: "Aktualizovat předpověď",
+    chargeRunning: "Aktualizuji…", chargeNone: "Zatím žádná předpověď nabití na dnešek.",
+    chargeBattery: "Baterie", chargeDevices: "Zařízení", chargeRisks: "Rizika",
     good: "Co fungovalo", problems: "Problémy", suggestions: "Návrhy úprav", watchOnlyDay: "den v režimu Jen sledovat",
+    proposalApply: "Použít", proposalDismiss: "Zamítnout",
+    proposalApplied: "použito", proposalDismissed: "zamítnuto", proposalInvalid: "neplatné",
+    proposalFromTo: "z", proposalTo: "na",
     statsHint: "Spotřeba dnes, náklady za energii ze sítě (NT/VT) a podíl ze slunce",
     outlook: "Předpoklad dne", outlookHint: "Co Optimizer očekává do konce dne z predikce, termínů a HDO – ne AI odhad.",
     outlookSurplus: "jen při přebytku", outlookSolar: "pokryje slunce", outlookMet: "minimum splněno",
@@ -86,6 +100,9 @@ const T = {
     setTo: "set", inProgress: "in progress", manualHint: "Carry out the recommendations by hand",
     until: "until", then: "then", price: "Price", today: "today", notControlled: "not controlled",
     available: "Plan", availableHint: "How much the Optimizer wants to give managed devices. Includes power they already draw (it can be taken back and reallocated) – so the plan can be larger than grid export alone.",
+    budgetPartDevices: "managed devices", budgetPartExport: "export", budgetPartImport: "grid import",
+    budgetPartBattery: "battery", budgetPartReserved: "reserved for battery", budgetPartReserve: "headroom",
+    budgetPartEq: "plan",
     allocatedRow: "Allocated", allocatedHint: "Sum of power the Optimizer currently proposes for managed devices.",
     rest: "rest", restHint: "What devices do not take from the plan – left for the battery or the grid.",
     toBattery: "battery", toBatteryGrid: "battery / grid",
@@ -107,7 +124,18 @@ const T = {
     realOff: "off", realOn: "on", realRun: "running", realCharge: "charging",
     review: "AI review", reviewNow: "Review now", reviewing: "Reviewing…", noReview: "No review yet.",
     reviewOff: "AI review is not set up – choose an AI Task entity in the FVE Optimizer settings (Control step).",
+    reviewAsk: "Ask", reviewAsking: "Answering…", reviewAskPlaceholder: "Question about the review…",
+    reviewYou: "You", reviewAi: "AI",
+    morningPlan: "Morning plan", morningNow: "Prepare day plan", morningRunning: "Preparing…",
+    morningNone: "No morning plan for today yet.",
+    morningExpect: "Expectations", morningRisks: "Risks",
+    chargeForecast: "Current charge forecast", chargeNow: "Refresh forecast",
+    chargeRunning: "Refreshing…", chargeNone: "No charge forecast for today yet.",
+    chargeBattery: "Battery", chargeDevices: "Devices", chargeRisks: "Risks",
     good: "What worked", problems: "Problems", suggestions: "Suggested changes", watchOnlyDay: "watch-only day",
+    proposalApply: "Apply", proposalDismiss: "Dismiss",
+    proposalApplied: "applied", proposalDismissed: "dismissed", proposalInvalid: "invalid",
+    proposalFromTo: "from", proposalTo: "to",
     statsHint: "Consumption today, cost of grid energy (NT/VT) and solar share",
     outlook: "Today’s outlook", outlookHint: "What the Optimizer expects for the rest of the day from forecast, deadlines and HDO – not an AI guess.",
     outlookSurplus: "surplus only", outlookSolar: "covered by sun", outlookMet: "minimum met",
@@ -132,8 +160,36 @@ const fmtW = (w) => {
   const v = Math.abs(Number(w) || 0);
   return v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1).replace(".", ",")} kW` : `${Math.round(v)} W`;
 };
+/** Signed watts for budget-part tooltips (+900 W / −100 W). */
+const fmtWSigned = (w) => {
+  const n = Math.round(Number(w) || 0);
+  if (n === 0) return "0 W";
+  return `${n > 0 ? "+" : "−"}${fmtW(Math.abs(n))}`;
+};
 const num = (v, d = 1) => (v == null || Number.isNaN(Number(v)) ? "?" : Number(v).toFixed(d).replace(".", ","));
 const esc = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+/** Tooltip for Návrh / Plan: short explanation + live budget_parts breakdown. */
+const budgetAvailableHint = (t, parts, budget) => {
+  const p = parts && typeof parts === "object" ? parts : {};
+  const lines = [t.availableHint, ""];
+  const row = (label, watts, sign) => {
+    const n = Number(watts) || 0;
+    if (!n && sign !== "=") return;
+    const shown = sign === "=" ? fmtW(watts) : sign === "-" ? fmtWSigned(-Math.abs(n)) : fmtWSigned(n);
+    lines.push(`${label}: ${shown}`);
+  };
+  row(t.budgetPartDevices, p.devices, "+");
+  row(t.budgetPartExport, p.export, "+");
+  row(t.budgetPartImport, p.import, "-");
+  // Battery: charging (+) adds to the plan, discharging (−) reduces it.
+  if (p.battery) row(t.budgetPartBattery, p.battery, "+");
+  row(t.budgetPartReserved, p.battery_reserved, "-");
+  row(t.budgetPartReserve, p.reserve, "-");
+  if (lines.length > 2) {
+    lines.push(`= ${t.budgetPartEq}: ${fmtW(budget)}`);
+  }
+  return lines.join("\n");
+};
 // Survives script reloads (customElements.define cannot replace the class).
 const INSTANCES = (window.__fveOptimizerCards = window.__fveOptimizerCards || new Set());
 
@@ -379,9 +435,10 @@ class FveOptimizerCard extends HTMLElement {
       const allocated = Number(d.allocated_w) || 0;
       const leftover = Math.max(budget - allocated, 0);
       const restDest = d.battery_priority ? t.toBattery : t.toBatteryGrid;
+      const availableTitle = budgetAvailableHint(t, d.budget_parts, budget);
       return `
         <div class="budget">
-          <div class="budget-item" title="${esc(t.availableHint)}">
+          <div class="budget-item" title="${esc(availableTitle)}">
             <div class="meta-label">${t.available}</div>
             <div class="budget-value">${fmtW(budget)}</div>
           </div>
@@ -713,18 +770,89 @@ class FveOptimizerCard extends HTMLElement {
     };
     const scoreCls = (sc) => (sc >= 8 ? "ok" : sc >= 5 ? "mid" : "bad");
     const history = (d.review_history || []).slice(0, 14).reverse();
+    const discussion = Array.isArray(rv?.discussion) ? rv.discussion : [];
+    const chatBusy = d.review_running || d.review_asking || d.morning_running || d.charge_running;
+    const mp = d.morning_plan;
+    const cf = d.charge_forecast;
+    const morningHtml = `
+      <div class="rv-morning">
+        <div class="rv-morning-top">
+          <div class="rv-h">${t.morningPlan}</div>
+          <button class="btn morning-now" ${chatBusy ? "disabled" : ""}>${d.morning_running ? t.morningRunning : t.morningNow}</button>
+        </div>
+        ${mp ? `<div class="rv-meta">${new Date(mp.at).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" })}${mp.dry_run ? ` · ${t.watchOnlyDay}` : ""}</div>
+          <div class="rv-sum">${esc(mp.summary)}</div>
+          ${list(t.morningExpect, mp.expectations, "outlook")}${list(t.morningRisks, mp.risks, "bad")}`
+          : `<div class="rv-meta">${t.morningNone}</div>`}
+      </div>`;
+    const chargeHtml = `
+      <div class="rv-morning rv-charge">
+        <div class="rv-morning-top">
+          <div class="rv-h">${t.chargeForecast}</div>
+          <button class="btn charge-now" ${chatBusy ? "disabled" : ""}>${d.charge_running ? t.chargeRunning : t.chargeNow}</button>
+        </div>
+        ${cf ? `<div class="rv-meta">${new Date(cf.at).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" })}${cf.dry_run ? ` · ${t.watchOnlyDay}` : ""}</div>
+          <div class="rv-sum">${esc(cf.summary)}</div>
+          <div class="rv-sec outlook"><div class="rv-h">${t.chargeBattery}</div>
+            <ul><li>~${esc(String(cf.battery_expected_soc ?? "–"))} %${cf.battery_note ? ` – ${esc(cf.battery_note)}` : ""}</li></ul>
+          </div>
+          ${list(t.chargeDevices, cf.devices, "outlook")}${list(t.chargeRisks, cf.risks, "bad")}`
+          : `<div class="rv-meta">${t.chargeNone}</div>`}
+      </div>`;
+    const chatHtml = !rv ? "" : `
+      <div class="rv-chat">
+        ${discussion.map((turn) => `
+          <div class="rv-turn q"><span class="who">${t.reviewYou}</span>${esc(turn.question)}</div>
+          <div class="rv-turn a"><span class="who">${t.reviewAi}</span>${esc(turn.answer)}</div>
+        `).join("")}
+        <div class="rv-ask">
+          <input class="rv-q" type="text" maxlength="500" placeholder="${esc(t.reviewAskPlaceholder)}" ${chatBusy ? "disabled" : ""} />
+          <button class="btn rv-ask-btn" ${chatBusy ? "disabled" : ""}>${d.review_asking ? t.reviewAsking : t.reviewAsk}</button>
+        </div>
+      </div>`;
     const reviewBlock = !d.review_enabled ? `<div class="none">${t.reviewOff}</div>` : `
       <div class="review">
+        ${morningHtml}
+        ${chargeHtml}
         <div class="rv-top">
           ${rv ? `<div class="score ${scoreCls(rv.score)}">${rv.score}<small>/10</small></div>` : ""}
           <div class="rv-meta">
             ${rv ? `<div>${new Date(rv.at).toLocaleString(lang, { dateStyle: "medium", timeStyle: "short" })}${rv.dry_run ? ` · ${t.watchOnlyDay}` : ""}</div>` : `<div>${t.noReview}</div>`}
             ${d.review_error ? `<div class="err">${esc(d.review_error)}</div>` : ""}
           </div>
-          <button class="btn review-now" ${d.review_running ? "disabled" : ""}>${d.review_running ? t.reviewing : t.reviewNow}</button>
+          <button class="btn review-now" ${chatBusy ? "disabled" : ""}>${d.review_running ? t.reviewing : t.reviewNow}</button>
         </div>
         ${rv ? `<div class="rv-sum">${esc(rv.summary)}</div>
-          ${list(t.good, rv.good, "good")}${list(t.problems, rv.problems, "bad")}${list(t.suggestions, rv.suggestions, "sugg")}${list(t.aiOutlook, rv.outlook, "outlook")}` : ""}
+          ${list(t.good, rv.good, "good")}${list(t.problems, rv.problems, "bad")}
+          ${(() => {
+            const props = Array.isArray(rv.proposals) ? rv.proposals : [];
+            if (!props.length) return list(t.suggestions, rv.suggestions, "sugg");
+            const fmtVal = (v) => (typeof v === "boolean" ? (v ? "on" : "off") : String(v));
+            const statusLabel = (st) => (
+              st === "applied" ? t.proposalApplied
+                : st === "dismissed" ? t.proposalDismissed
+                  : st === "invalid" ? t.proposalInvalid : ""
+            );
+            const rows = props.map((p) => {
+              const st = p.status || "pending";
+              const head = `${esc(p.target)} – ${esc(p.key)}: ${t.proposalFromTo} ${esc(fmtVal(p.from))} ${t.proposalTo} ${esc(fmtVal(p.to))}`;
+              const reason = p.reason ? ` – ${esc(p.reason)}` : "";
+              const err = p.error ? ` (${esc(p.error)})` : "";
+              if (st === "pending") {
+                return `<li class="rv-prop">
+                  <div class="rv-prop-text">${head}${reason}</div>
+                  <div class="rv-prop-actions">
+                    <button class="btn prop-apply" data-id="${esc(p.id)}" ${chatBusy ? "disabled" : ""}>${t.proposalApply}</button>
+                    <button class="btn prop-dismiss" data-id="${esc(p.id)}" ${chatBusy ? "disabled" : ""}>${t.proposalDismiss}</button>
+                  </div>
+                </li>`;
+              }
+              return `<li class="rv-prop done"><span class="rv-prop-text">${head}${reason}${err}</span><span class="rv-prop-st">${statusLabel(st)}</span></li>`;
+            }).join("");
+            return `<div class="rv-sec sugg"><div class="rv-h">${t.suggestions}</div><ul>${rows}</ul></div>`;
+          })()}
+          ${list(t.aiOutlook, rv.outlook, "outlook")}
+          ${chatHtml}` : ""}
         ${history.length > 1 ? `<div class="rv-hist">${history.map((h) => `<div class="hb ${scoreCls(h.score)}" title="${h.date}: ${h.score}/10" style="height:${8 + h.score * 3}px"></div>`).join("")}</div>` : ""}
       </div>`;
     const time = (() => {
@@ -767,6 +895,49 @@ class FveOptimizerCard extends HTMLElement {
       ev.currentTarget.disabled = true;
       ev.currentTarget.textContent = t.reviewing;
       this._hass.callService("fve_optimizer", "run_review", {});
+    });
+    root.querySelector("button.morning-now")?.addEventListener("click", (ev) => {
+      ev.currentTarget.disabled = true;
+      ev.currentTarget.textContent = t.morningRunning;
+      this._hass.callService("fve_optimizer", "run_morning_brief", {});
+    });
+    root.querySelector("button.charge-now")?.addEventListener("click", (ev) => {
+      ev.currentTarget.disabled = true;
+      ev.currentTarget.textContent = t.chargeRunning;
+      this._hass.callService("fve_optimizer", "run_charge_forecast", {});
+    });
+    root.querySelectorAll("button.prop-apply").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const id = ev.currentTarget.getAttribute("data-id");
+        if (!id) return;
+        ev.currentTarget.disabled = true;
+        this._hass.callService("fve_optimizer", "apply_ai_proposal", { id });
+      });
+    });
+    root.querySelectorAll("button.prop-dismiss").forEach((btn) => {
+      btn.addEventListener("click", (ev) => {
+        const id = ev.currentTarget.getAttribute("data-id");
+        if (!id) return;
+        ev.currentTarget.disabled = true;
+        this._hass.callService("fve_optimizer", "dismiss_ai_proposal", { id });
+      });
+    });
+    const askBtn = root.querySelector("button.rv-ask-btn");
+    const askInput = root.querySelector("input.rv-q");
+    const sendAsk = () => {
+      const q = (askInput?.value || "").trim();
+      if (!q || !askBtn || askBtn.disabled) return;
+      askBtn.disabled = true;
+      askBtn.textContent = t.reviewAsking;
+      if (askInput) askInput.disabled = true;
+      this._hass.callService("fve_optimizer", "ask_review", { question: q });
+    };
+    askBtn?.addEventListener("click", sendAsk);
+    askInput?.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        sendAsk();
+      }
     });
     root.querySelectorAll("button.btn[data-id]").forEach((b) =>
       b.addEventListener("click", (ev) => {
@@ -1064,11 +1235,28 @@ const STYLE = `<style>
   .rv-sec ul { margin: 2px 0 0; padding-left: 18px; }
   .rv-sec.sugg li { color: var(--info-color, #039be5); }
   .rv-sec.outlook li { color: var(--primary-text-color); }
+  .rv-prop { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
+  .rv-prop.done { opacity: 0.7; }
+  .rv-prop-text { flex: 1 1 12em; }
+  .rv-prop-actions { display: flex; gap: 4px; }
+  .rv-prop-actions .btn { font-size: 12px; padding: 2px 8px; }
+  .rv-prop-st { font-size: 11px; color: var(--secondary-text-color); text-transform: lowercase; }
   .rv-hist { display: flex; align-items: flex-end; gap: 3px; height: 42px; margin-top: 8px; }
   .hb { width: 10px; border-radius: 2px; }
   .hb.ok { background: var(--success-color, #43a047); }
   .hb.mid { background: var(--warning-color, #ff9800); }
   .hb.bad { background: var(--error-color, #db4437); }
+  .rv-morning { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--divider-color); }
+  .rv-morning-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .rv-chat { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--divider-color); }
+  .rv-turn { font-size: 13px; margin: 6px 0; white-space: pre-wrap; }
+  .rv-turn .who { display: block; font-size: 11px; color: var(--secondary-text-color); margin-bottom: 2px; }
+  .rv-turn.q { color: var(--primary-text-color); }
+  .rv-turn.a { color: var(--info-color, #039be5); }
+  .rv-ask { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .rv-q { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 8px;
+    border: 1px solid var(--divider-color); border-radius: 4px; background: var(--card-background-color);
+    color: var(--primary-text-color); }
   .foot { text-align: right; font-size: 11px; color: var(--secondary-text-color); margin-top: 6px; }
 </style>`;
 

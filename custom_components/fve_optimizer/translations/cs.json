@@ -80,6 +80,9 @@
           "ai_task_entity": "AI pro denní hodnocení (volitelné)",
           "ai_review_enabled": "AI hodnocení",
           "ai_review_time": "Čas AI hodnocení",
+          "ai_morning_enabled": "Ranní AI předpoklad",
+          "ai_morning_time": "Čas ranního předpokladu",
+          "ai_charge_forecast_enabled": "Předpověď nabití během dne",
           "ai_outlook_check": "AI rada při riziku termínu",
           "notify_service": "Služba notifikací (volitelné)",
           "persistent_notification": "Trvalé notifikace v HA",
@@ -105,6 +108,8 @@
           "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
           "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
           "ai_review_enabled": "Každý den v nastavený čas.",
+          "ai_morning_enabled": "Ráno připraví předpoklad výroby a plánu (baseline pro večerní srovnání).",
+          "ai_charge_forecast_enabled": "Během dne obnoví AI odhad nabití baterie / bojleru / auta (každé 3 h do ~18:00). Nepřepisuje ranní předpoklad.",
           "ai_outlook_check": "Když termín bojleru/auta začne nestíhat, stejná AI dá krátkou radu (nejvýš jednou denně na zařízení).",
           "notify_service": "Služba Home Assistant notify bez domény, např. mobile_app_pixel nebo telegram. Prázdné = jen trvalé notifikace / eventy.",
           "persistent_notification": "Také vytvořit notifikace v Nastavení → Notifikace.",
@@ -261,6 +266,9 @@
           "ai_task_entity": "AI pro denní hodnocení (volitelné)",
           "ai_review_enabled": "AI hodnocení",
           "ai_review_time": "Čas AI hodnocení",
+          "ai_morning_enabled": "Ranní AI předpoklad",
+          "ai_morning_time": "Čas ranního předpokladu",
+          "ai_charge_forecast_enabled": "Předpověď nabití během dne",
           "ai_outlook_check": "AI rada při riziku termínu",
           "notify_service": "Služba notifikací (volitelné)",
           "persistent_notification": "Trvalé notifikace v HA",
@@ -286,6 +294,8 @@
           "dry_run": "Integrace počítá, loguje a zobrazuje rozhodnutí, ale nic nespíná ani nezapisuje limit přetoku. Na vyzkoušení na skutečné instalaci.",
           "ai_task_entity": "AI Task entita, např. z integrace Google Generative AI nebo Anthropic. Každý den vyhodnotí rozhodnutí a navrhne úpravy nastavení – nic sama nemění.",
           "ai_review_enabled": "Každý den v nastavený čas.",
+          "ai_morning_enabled": "Ráno připraví předpoklad výroby a plánu (baseline pro večerní srovnání).",
+          "ai_charge_forecast_enabled": "Během dne obnoví AI odhad nabití baterie / bojleru / auta (každé 3 h do ~18:00). Nepřepisuje ranní předpoklad.",
           "ai_outlook_check": "Když termín bojleru/auta začne nestíhat, stejná AI dá krátkou radu (nejvýš jednou denně na zařízení).",
           "notify_service": "Služba Home Assistant notify bez domény, např. mobile_app_pixel nebo telegram. Prázdné = jen trvalé notifikace / eventy.",
           "persistent_notification": "Také vytvořit notifikace v Nastavení → Notifikace.",
@@ -655,6 +665,12 @@
       "ai_review_enabled": {
         "name": "AI hodnocení"
       },
+      "ai_morning_enabled": {
+        "name": "Ranní AI předpoklad"
+      },
+      "ai_charge_forecast_enabled": {
+        "name": "Předpověď nabití během dne"
+      },
       "ai_outlook_check": {
         "name": "AI rada při riziku termínu"
       },
@@ -936,11 +952,20 @@
       },
       "ai_review_time": {
         "name": "Čas AI hodnocení"
+      },
+      "ai_morning_time": {
+        "name": "Čas ranního předpokladu"
       }
     },
     "button": {
       "review_now": {
         "name": "Vyhodnotit nyní"
+      },
+      "morning_brief": {
+        "name": "Připravit předpoklad"
+      },
+      "charge_forecast": {
+        "name": "Aktualizovat předpověď nabití"
       }
     }
   },
@@ -958,6 +983,44 @@
     "run_review": {
       "name": "Spustit AI hodnocení",
       "description": "Nechá vybranou AI hned vyhodnotit dnešní rozhodnutí."
+    },
+    "run_morning_brief": {
+      "name": "Připravit ranní předpoklad",
+      "description": "Nechá AI připravit předpoklad výroby a plánu dne (baseline pro večerní srovnání)."
+    },
+    "run_charge_forecast": {
+      "name": "Aktualizovat předpověď nabití",
+      "description": "Nechá AI obnovit odhad nabití baterie / bojleru / auta během dne. Ranní předpoklad nemění."
+    },
+    "ask_review": {
+      "name": "Zeptat se na AI hodnocení",
+      "description": "Položí doplňující otázku k poslednímu dennímu hodnocení. AI nic nemění.",
+      "fields": {
+        "question": {
+          "name": "Otázka",
+          "description": "Např. proč je návrh na delší off_delay_s, nebo jestli stačí kratší."
+        }
+      }
+    },
+    "apply_ai_proposal": {
+      "name": "Použít AI návrh nastavení",
+      "description": "Aplikuje jeden čekající návrh změny parametru podle ID. Zařízení nespíná.",
+      "fields": {
+        "id": {
+          "name": "ID návrhu",
+          "description": "ID z proposals v hodnocení / na kartě."
+        }
+      }
+    },
+    "dismiss_ai_proposal": {
+      "name": "Zamítnout AI návrh nastavení",
+      "description": "Zamítne jeden čekající návrh bez změny nastavení.",
+      "fields": {
+        "id": {
+          "name": "ID návrhu",
+          "description": "ID z proposals v hodnocení / na kartě."
+        }
+      }
     }
   }
 }

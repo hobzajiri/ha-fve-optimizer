@@ -1,4 +1,4 @@
-"""Button: run the AI review of today's decisions now."""
+"""Buttons: AI review, morning plan, charge forecast."""
 
 from __future__ import annotations
 
@@ -19,7 +19,13 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     if coordinator.conf.get(CONF_AI_TASK_ENTITY):
-        async_add_entities([ReviewNowButton(coordinator)])
+        async_add_entities(
+            [
+                ReviewNowButton(coordinator),
+                MorningBriefButton(coordinator),
+                ChargeForecastButton(coordinator),
+            ]
+        )
 
 
 class ReviewNowButton(FveOptimizerEntity, ButtonEntity):
@@ -30,3 +36,23 @@ class ReviewNowButton(FveOptimizerEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         await self.coordinator.async_run_review()
+
+
+class MorningBriefButton(FveOptimizerEntity, ButtonEntity):
+    """Ask the AI for today's morning production plan now."""
+
+    def __init__(self, coordinator: FveOptimizerCoordinator) -> None:
+        super().__init__(coordinator, "morning_brief")
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_run_morning_brief()
+
+
+class ChargeForecastButton(FveOptimizerEntity, ButtonEntity):
+    """Refresh the mid-day AI charge forecast."""
+
+    def __init__(self, coordinator: FveOptimizerCoordinator) -> None:
+        super().__init__(coordinator, "charge_forecast")
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_run_charge_forecast()

@@ -190,11 +190,27 @@ entitě v HA – Google Gemini, Anthropic Claude, OpenAI, Ollama… AI vrátí z
 nemění.
 
 * Nastavení: integrace → **Konfigurovat** → krok Řízení → **AI pro denní hodnocení**.
-* Výsledek: entita *AI hodnocení* (známka, text v atributech), panel → záložka
-  **Hodnocení** (poslední hodnocení a historie 14 dní), služba
-  `fve_optimizer.run_review`.
+* **Ranní předpoklad** (výchozí 07:00): stejná AI připraví předpoklad výroby a
+  plánu (čísla z predikce/outlooku + krátký text). Uloží se jako baseline.
+  Služba `fve_optimizer.run_morning_brief`, tlačítko **Připravit předpoklad**.
+* **Předpověď nabití během dne**: aktualizovatelný odhad SoC baterie / bojler /
+  auto (po ranním briefu a každých 3 h do ~18:00 nebo západu). Nepřepisuje
+  ranní baseline. Služba `fve_optimizer.run_charge_forecast`, tlačítko
+  **Aktualizovat předpověď** (panel → **Hodnocení**). Přepínač
+  `ai_charge_forecast_enabled`.
+* **Večerní hodnocení** (výchozí 21:00): známka, shrnutí, návrhy; porovná den
+  s ranním plánem a vysvětlí odchylky. Entita *AI hodnocení*, panel →
+  **Hodnocení**, služba `fve_optimizer.run_review`.
+* **Návrhy nastavení se schválením**: AI vrátí strukturované změny tunables
+  (delay, rezerva…). Nic sama nezapíše – na kartě **Použít** / **Zamítnout**,
+  nebo služby `fve_optimizer.apply_ai_proposal` /
+  `fve_optimizer.dismiss_ai_proposal`. Dispečer dál spíná zařízení.
+* Po hodnocení můžeš na kartě **zeptat se** na shrnutí / návrhy (služba
+  `fve_optimizer.ask_review`) – AI dostane data dne + hodnocení + historii Q&A,
+  nic nemění.
 * Po hodnocení se vždy vypálí event `fve_optimizer_review_done` (score, summary,
   suggestions…). Volitelně notifikace při nízké známce / návrzích.
+  Po schválení návrhu: `fve_optimizer_proposal_applied`.
 * **AI rada při riziku termínu**: když bojler/auto začne nestíhat (`at_risk`),
   stejná AI jednou denně na zařízení navrhne krátkou radu
   (event `fve_optimizer_outlook_check` + notifikace).
@@ -214,6 +230,7 @@ Doménové eventy (vždy, i bez notify služby) – vhodné do automatizací:
 | Event | Kdy |
 | --- | --- |
 | `fve_optimizer_review_done` | po AI hodnocení |
+| `fve_optimizer_proposal_applied` | po schválení AI návrhu nastavení |
 | `fve_optimizer_outlook_check` | AI rada při at_risk |
 | `fve_optimizer_failsafe` / `_failsafe_cleared` | vstup / návrat z pojistky |
 | `fve_optimizer_deadline_risk` | zařízení začne nestíhat termín |

@@ -107,6 +107,86 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             supports_response=SupportsResponse.OPTIONAL,
         )
 
+    if not hass.services.has_service(DOMAIN, "ask_review"):
+
+        async def ask_review(call: ServiceCall) -> ServiceResponse:
+            """Ask a follow-up question about the latest AI review."""
+            turns = []
+            for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+                turns.append(await entry.runtime_data.async_ask_review(call.data["question"]))
+            return {"turns": turns}
+
+        hass.services.async_register(
+            DOMAIN,
+            "ask_review",
+            ask_review,
+            schema=vol.Schema({vol.Required("question"): str}),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, "apply_ai_proposal"):
+
+        async def apply_ai_proposal(call: ServiceCall) -> ServiceResponse:
+            """Apply one pending AI setting proposal by id."""
+            applied = []
+            for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+                applied.append(await entry.runtime_data.async_apply_proposal(call.data["id"]))
+            return {"proposals": applied}
+
+        async def dismiss_ai_proposal(call: ServiceCall) -> ServiceResponse:
+            """Dismiss one pending AI setting proposal by id."""
+            dismissed = []
+            for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+                dismissed.append(await entry.runtime_data.async_dismiss_proposal(call.data["id"]))
+            return {"proposals": dismissed}
+
+        hass.services.async_register(
+            DOMAIN,
+            "apply_ai_proposal",
+            apply_ai_proposal,
+            schema=vol.Schema({vol.Required("id"): str}),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            "dismiss_ai_proposal",
+            dismiss_ai_proposal,
+            schema=vol.Schema({vol.Required("id"): str}),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, "run_morning_brief"):
+
+        async def run_morning_brief(call: ServiceCall) -> ServiceResponse:
+            """Prepare today's morning production / day plan via AI."""
+            plans = []
+            for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+                plans.append(await entry.runtime_data.async_run_morning_brief())
+            return {"plans": plans}
+
+        hass.services.async_register(
+            DOMAIN,
+            "run_morning_brief",
+            run_morning_brief,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
+    if not hass.services.has_service(DOMAIN, "run_charge_forecast"):
+
+        async def run_charge_forecast(call: ServiceCall) -> ServiceResponse:
+            """Refresh the mid-day AI charge forecast."""
+            forecasts = []
+            for entry in hass.config_entries.async_loaded_entries(DOMAIN):
+                forecasts.append(await entry.runtime_data.async_run_charge_forecast())
+            return {"forecasts": forecasts}
+
+        hass.services.async_register(
+            DOMAIN,
+            "run_charge_forecast",
+            run_charge_forecast,
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
     if not hass.services.has_service(DOMAIN, "set_ev_charge_order"):
 
         async def set_ev_charge_order(call: ServiceCall) -> ServiceResponse:
@@ -290,6 +370,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: FveOptimizerConfigEntry)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     entry.async_on_unload(
         async_track_time_change(hass, coordinator.async_scheduled_review, second=0)
+    )
+    entry.async_on_unload(
+        async_track_time_change(hass, coordinator.async_scheduled_morning, second=0)
+    )
+    entry.async_on_unload(
+        async_track_time_change(hass, coordinator.async_scheduled_charge_forecast, second=0)
     )
     return True
 

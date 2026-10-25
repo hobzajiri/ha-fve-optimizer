@@ -491,19 +491,38 @@ async def test_parse_proposals_whitelist(hass: HomeAssistant) -> None:
     Recorder(hass)
     _fake_ai(hass)
     _states(hass, grid=0, batt=0, soc=95, switch__boiler="off")
-    coordinator = await _setup(hass, _entry({"ai_task_entity": "ai_task.test"}, ("switched", BOILER)))
+    boiler = {
+        **BOILER,
+        "temperature_sensor": "sensor.water",
+        "deadline_enabled": True,
+        "deadline_time": "19:00:00",
+        "deadline_temperature": 50.0,
+        "deadline_safety_factor": 1.2,
+        "tank_volume_l": 160.0,
+    }
+    hass.states.async_set("sensor.water", "45")
+    coordinator = await _setup(hass, _entry({"ai_task_entity": "ai_task.test"}, ("switched", boiler)))
     parsed = parse_proposals(
         coordinator,
         [
             {"target": "Bojler", "key": "off_delay_s", "from": 60, "to": 180, "reason": "ok"},
+            {"target": "Bojler", "key": "deadline_safety_factor", "from": 1.2, "to": 1.0, "reason": "ok"},
+            {"target": "Bojler", "key": "deadline_time", "from": "19:00:00", "to": "18:00", "reason": "ok"},
             {"target": "Bojler", "key": "dry_run", "from": False, "to": True, "reason": "no"},
             {"target": "hub", "key": "reserve_w", "from": 100, "to": 150, "reason": "ok"},
+            {"target": "hub", "key": "ai_review_enabled", "from": True, "to": False, "reason": "no"},
             {"target": "Neexistuje", "key": "off_delay_s", "from": 60, "to": 90, "reason": "x"},
         ],
     )
     pending = [p for p in parsed if p["status"] == "pending"]
     invalid = [p for p in parsed if p["status"] == "invalid"]
-    assert {p["key"] for p in pending} == {"off_delay_s", "reserve_w"}
+    assert {p["key"] for p in pending} == {
+        "off_delay_s",
+        "deadline_safety_factor",
+        "deadline_time",
+        "reserve_w",
+    }
+    assert any(p["key"] == "deadline_time" and p["to"] == "18:00:00" for p in pending)
     assert any(p["error"] == "key_not_allowed" for p in invalid)
     assert any(p["error"] == "unknown_target" for p in invalid)
 

@@ -85,6 +85,8 @@ _LOGGER = logging.getLogger(__name__)
 WH_PER_LITRE_KELVIN = 1.163
 # Extra time added before the computed start of deadline heating.
 DEADLINE_LEAD = timedelta(minutes=10)
+# Forgive tiny overruns vs HDO windows (rounding, sensor lag, safety ≈1.01 h in a 1 h slot).
+DEADLINE_FIT_SLACK = timedelta(minutes=2)
 
 
 def state_float(hass: HomeAssistant, entity_id: str | None) -> float | None:
@@ -233,6 +235,16 @@ class ManagedDevice:
         """Below its guaranteed minimum – gets surplus before the battery."""
         return False
 
+    @property
+    def surplus_thermal_dump(self) -> bool:
+        """Heating only as surplus storage above the deadline minimum."""
+        return False
+
+    @property
+    def wants_surplus_charge(self) -> bool:
+        """EV (or similar) wants non-urgent surplus charging below its target."""
+        return False
+
     def update_deadline(self, now: datetime) -> float:
         """Decide deadline (urgent) mode; return solar kWh the device counts on."""
         self.status.urgent = False
@@ -320,6 +332,13 @@ class SwitchedDevice(ManagedDevice):
         self._deadline_met_day: date | None = None
         self._deadline_info: dict[str, Any] = {}
         self._waiting_for_hdo = False
+        # One-shot / calendar: heat to temp by deadline {"temp", "deadline", "source"}.
+        self._heat_order: dict[str, Any] | None = None
+        self._order_completed: dict[str, Any] | None = None
+        # Satisfied calendar order (temp+deadline) – do not re-apply until the event ends.
+        self._calendar_order_done: dict[str, Any] | None = None
+        # Calendar absence: temporary cap on surplus max temperature (°C).
+        self._max_temp_override: float | None = None
 
     @property
     def phases(self) -> int:
@@ -366,10 +385,29 @@ class SwitchedDevice(ManagedDevice):
             "minimum_pending": self.minimum_pending,
             "urgent_now": self.status.urgent,
             "reason": self.status.reason,
+            "heat_order": self.heat_order,
         }
+        info = self._deadline_info
+        order = self._heat_order
+        if order and self._temperature is not None and self._temperature < float(order["temp"]):
+            out.update({
+                "mode": "deadline",
+                "deadline": info.get("deadline") or order.get("deadline"),
+                "deadline_start": info.get("deadline_start"),
+                "target": float(order["temp"]),
+                "deadline_mode": info.get("deadline_mode"),
+                "plan": info.get("deadline_plan"),
+                "need_kwh": info.get("deadline_need_kwh"),
+                "solar_kwh": info.get("deadline_solar_kwh"),
+                "grid_kwh": info.get("deadline_grid_kwh"),
+                "heating_h": info.get("deadline_heating_h"),
+                "at_risk": bool(info.get("deadline_at_risk")),
+                "waiting_for_hdo": self._waiting_for_hdo,
+                "source": order.get("source") or "order",
+            })
+            return out
         if not self.config.get(CONF_DEADLINE_ENABLED):
             return out
-        info = self._deadline_info
         if info.get("deadline_mode") == "met" or self._deadline_met_day == dt_util.now().date():
             out.update({
                 "mode": "deadline_met",
@@ -391,6 +429,7 @@ class SwitchedDevice(ManagedDevice):
             "heating_h": info.get("deadline_heating_h"),
             "at_risk": bool(info.get("deadline_at_risk")),
             "waiting_for_hdo": self._waiting_for_hdo,
+            "source": info.get("deadline_source", "daily"),
         })
         return out
 
@@ -404,6 +443,8 @@ class SwitchedDevice(ManagedDevice):
             "deadline_met_day": (
                 self._deadline_met_day.isoformat() if self._deadline_met_day else None
             ),
+            "heat_order": self._heat_order,
+            "calendar_order_done": self._calendar_order_done,
         })
         return data
 
@@ -423,6 +464,23 @@ class SwitchedDevice(ManagedDevice):
                 self._deadline_met_day = date.fromisoformat(value)
             except ValueError:
                 self._deadline_met_day = None
+        order = data.get("heat_order")
+        if isinstance(order, dict) and order.get("temp") is not None and order.get("deadline"):
+            self._heat_order = {
+                "temp": float(order["temp"]),
+                "deadline": str(order["deadline"]),
+                "source": str(order.get("source") or "manual"),
+            }
+        else:
+            self._heat_order = None
+        done = data.get("calendar_order_done")
+        if isinstance(done, dict) and done.get("temp") is not None and done.get("deadline"):
+            self._calendar_order_done = {
+                "temp": float(done["temp"]),
+                "deadline": str(done["deadline"]),
+            }
+        else:
+            self._calendar_order_done = None
 
     @property
     def legionella_due(self) -> bool:
@@ -439,8 +497,105 @@ class SwitchedDevice(ManagedDevice):
         """Surplus storage limit – raised to the legionella temperature when due."""
         maximum = self.cfg(CONF_MAX_TEMPERATURE)
         if self.legionella_due:
-            return max(maximum, self.cfg(CONF_LEGIONELLA_TEMPERATURE))
+            maximum = max(maximum, self.cfg(CONF_LEGIONELLA_TEMPERATURE))
+        if self._max_temp_override is not None:
+            maximum = min(maximum, float(self._max_temp_override))
         return maximum
+
+    def set_heat_order(self, target_temp: float, deadline: datetime) -> dict[str, Any]:
+        """One-shot: heat to ``target_temp`` by ``deadline``."""
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=dt_util.now().tzinfo)
+        temp = round(float(target_temp), 1)
+        self._heat_order = {
+            "temp": temp,
+            "deadline": deadline.isoformat(),
+            "source": "manual",
+        }
+        return dict(self._heat_order)
+
+    def clear_heat_order(self) -> None:
+        """Cancel the active heat order.
+
+        Calendar-sourced clears are remembered so sync does not re-apply the same
+        event until it ends (same as after auto-complete).
+        """
+        order = self._heat_order
+        if order and order.get("source") == "calendar":
+            self._calendar_order_done = {
+                "temp": float(order["temp"]),
+                "deadline": str(order["deadline"]),
+            }
+        self._heat_order = None
+
+    def complete_heat_order(self) -> dict[str, Any] | None:
+        """Clear because the target temperature was reached; queue a completion event."""
+        order = self.heat_order
+        if not order:
+            return None
+        # Reuse clear so calendar orders stay suppressed until the event ends.
+        self.clear_heat_order()
+        self._order_completed = order
+        return order
+
+    def pop_order_completed(self) -> dict[str, Any] | None:
+        """Return and clear a pending auto-completed order (for notify/event)."""
+        event = self._order_completed
+        self._order_completed = None
+        return event
+
+    def clear_calendar_heat_order(self) -> None:
+        if self._heat_order and self._heat_order.get("source") == "calendar":
+            self._heat_order = None
+        # Event gone – allow the next occurrence (e.g. recurring) to apply.
+        self._calendar_order_done = None
+
+    def release_calendar_order_event(self) -> bool:
+        """Calendar order event ended or was removed.
+
+        Unmet calendar orders stay for catch-up past the event end (same as a
+        manual order past its deadline). Only the satisfied/cancelled marker is
+        cleared so a later occurrence can apply. Returns True if state changed.
+        """
+        changed = False
+        if self._calendar_order_done is not None:
+            self._calendar_order_done = None
+            changed = True
+        return changed
+
+    def set_calendar_heat_order(self, target_temp: float, deadline: datetime) -> None:
+        """Apply calendar order only when no manual order is active."""
+        if self._heat_order and self._heat_order.get("source") == "manual":
+            return
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=dt_util.now().tzinfo)
+        temp = round(float(target_temp), 1)
+        deadline_iso = deadline.isoformat()
+        done = self._calendar_order_done
+        if (
+            done
+            and float(done.get("temp", -1)) == temp
+            and str(done.get("deadline")) == deadline_iso
+        ):
+            return
+        # Already at/above the calendar target (e.g. after a manual order) –
+        # mark this event satisfied instead of restarting deadline logic.
+        if self._temperature is not None and self._temperature >= temp:
+            self._heat_order = None
+            self._calendar_order_done = {"temp": temp, "deadline": deadline_iso}
+            return
+        self._heat_order = {
+            "temp": temp,
+            "deadline": deadline_iso,
+            "source": "calendar",
+        }
+
+    def set_max_temp_override(self, temp: float | None) -> None:
+        self._max_temp_override = None if temp is None else float(temp)
+
+    @property
+    def heat_order(self) -> dict[str, Any] | None:
+        return dict(self._heat_order) if self._heat_order else None
 
     def heat_need_kwh(self, target: float | None = None) -> float:
         """kWh to heat the tank from the current temperature to ``target``."""
@@ -458,12 +613,28 @@ class SwitchedDevice(ManagedDevice):
     def minimum_pending(self) -> bool:
         if self.away_defer_surplus:
             return False
+        if not bool(self.config.get(CONF_MIN_BEFORE_BATTERY)) or self._temperature is None:
+            return False
+        if self._heat_order and self._temperature < float(self._heat_order["temp"]):
+            return True
         return (
-            bool(self.config.get(CONF_MIN_BEFORE_BATTERY))
-            and bool(self.config.get(CONF_DEADLINE_ENABLED))
-            and self._temperature is not None
+            bool(self.config.get(CONF_DEADLINE_ENABLED))
             and self._temperature < self.deadline_temperature
         )
+
+    @property
+    def surplus_thermal_dump(self) -> bool:
+        """Deadline already met; only filling toward max surplus temperature."""
+        if self.status.urgent or self.minimum_pending or self.away_defer_surplus:
+            return False
+        if self._temperature is None:
+            return False
+        floor = self.deadline_temperature if self.config.get(CONF_DEADLINE_ENABLED) else 0.0
+        if self._heat_order:
+            floor = max(floor, float(self._heat_order["temp"]))
+        if not self.config.get(CONF_DEADLINE_ENABLED) and not self._heat_order:
+            return False
+        return floor <= self._temperature < self.max_temperature
 
     @property
     def deadline_temperature(self) -> float:
@@ -496,35 +667,64 @@ class SwitchedDevice(ManagedDevice):
         self._deadline_info = {}
         self._waiting_for_hdo = False
         self._solar_used = 0.0
-        if not self.config.get(CONF_DEADLINE_ENABLED) or self._temperature is None:
+        order = self._heat_order
+        if self._temperature is None:
             self._deadline_day = None
             return False
-        target = self.deadline_temperature
-        deadline_time = dt_util.parse_time(str(self.config[CONF_DEADLINE_TIME]))
-        if deadline_time is None:
-            return False
-        deadline = datetime.combine(now.date(), deadline_time, tzinfo=now.tzinfo)
+        # Resolve target + deadline: one-shot order wins over the daily schedule.
+        order_active = False
+        if order:
+            order_temp = float(order["temp"])
+            if self._temperature >= order_temp:
+                self.complete_heat_order()
+                order = None
+            else:
+                raw = dt_util.parse_datetime(str(order["deadline"]))
+                if raw is None:
+                    self.clear_heat_order()
+                    order = None
+                else:
+                    if raw.tzinfo is None:
+                        raw = raw.replace(tzinfo=now.tzinfo)
+                    target = order_temp
+                    deadline = raw
+                    deadline_time = deadline.timetz().replace(tzinfo=None)
+                    order_active = True
+                    self._deadline_info["deadline_source"] = order.get("source") or "order"
+        if not order_active:
+            if not self.config.get(CONF_DEADLINE_ENABLED):
+                self._deadline_day = None
+                return False
+            target = self.deadline_temperature
+            deadline_time = dt_util.parse_time(str(self.config[CONF_DEADLINE_TIME]))
+            if deadline_time is None:
+                return False
+            deadline = datetime.combine(now.date(), deadline_time, tzinfo=now.tzinfo)
         delta_k = max(target - self._temperature, 0.0)
         need_kwh = self.cfg(CONF_TANK_VOLUME) * WH_PER_LITRE_KELVIN * delta_k / 1000
         self._solar_used = self._solar_for(deadline, now, need_kwh)
         grid_kwh = need_kwh - self._solar_used
         hours = grid_kwh * 1000 / self.nominal_w * self.cfg(CONF_DEADLINE_SAFETY)
         start = deadline - timedelta(hours=hours) - DEADLINE_LEAD
-        self._deadline_info = {
+        self._deadline_info.update({
             "deadline": deadline.isoformat(),
             "deadline_start": start.isoformat(),
             "deadline_need_kwh": round(need_kwh, 2),
             "deadline_solar_kwh": round(self._solar_used, 2),
             "deadline_grid_kwh": round(grid_kwh, 2),
             "deadline_heating_h": round(hours, 2),
-        }
+            "heat_order": self.heat_order,
+        })
 
         if self._temperature >= target:
-            self._deadline_met_day = now.date()
+            if order_active:
+                self.complete_heat_order()
+            else:
+                self._deadline_met_day = now.date()
             self._deadline_day = None
             self._deadline_info["deadline_mode"] = "met"
             return False
-        if self._deadline_met_day == now.date():
+        if not order_active and self._deadline_met_day == now.date():
             # Already hit the target earlier today (e.g. water was drawn off).
             self._deadline_day = None
             self._deadline_info["deadline_mode"] = "met"
@@ -538,12 +738,20 @@ class SwitchedDevice(ManagedDevice):
         hdo_only = bool(self.config.get(CONF_DEADLINE_HDO_ONLY)) and self.hdo_active is not None
         if hdo_only:
             earliest_time = dt_util.parse_time(str(self.config[CONF_DEADLINE_EARLIEST]))
-            earliest = datetime.combine(now.date(), earliest_time or deadline_time, tzinfo=now.tzinfo)
+            # Anchor to today so multi-day orders still use NT windows between now
+            # and the deadline (not only slots on the deadline's calendar day).
+            earliest = datetime.combine(
+                now.date(), earliest_time or deadline_time, tzinfo=now.tzinfo
+            )
+            if earliest > deadline:
+                earliest = datetime.combine(
+                    deadline.date(), deadline_time, tzinfo=now.tzinfo
+                ) - timedelta(hours=max(hours, 1))
             self._deadline_info.update(
                 deadline_mode="hdo",
                 deadline_start=earliest.isoformat(),
-                # Not enough time left even with continuous heating.
-                deadline_at_risk=now + timedelta(hours=hours) > deadline,
+                # Not enough time left even with continuous heating (tiny slack).
+                deadline_at_risk=now + timedelta(hours=hours) - DEADLINE_FIT_SLACK > deadline,
             )
             running = self._deadline_day == now.date()
             needs_heat = running or (
@@ -557,7 +765,9 @@ class SwitchedDevice(ManagedDevice):
             if windows is not None:
                 # Known schedule: heat in the latest HDO windows that are just
                 # enough, so surplus gets as much time as possible.
-                plan, enough = plan_windows(windows, now, timedelta(hours=hours))
+                plan, enough = plan_windows(
+                    windows, now, timedelta(hours=hours), slack=DEADLINE_FIT_SLACK
+                )
                 self._deadline_info.update(
                     deadline_mode="hdo_plan",
                     deadline_plan=[f"{a:%H:%M}-{b:%H:%M}" for a, b in plan],
@@ -568,17 +778,22 @@ class SwitchedDevice(ManagedDevice):
                     self._deadline_day = None
                     return False
                 in_plan = any(a <= now < b for a, b in plan)
-                # Past the deadline: catch up in any HDO window the same day.
-                catch_up = running and now >= deadline and bool(self.hdo_active)
+                # Past the deadline: catch up in any HDO (running daily, or one-shot order).
+                catch_up = (
+                    (running or order_active)
+                    and now >= deadline
+                    and bool(self.hdo_active)
+                )
                 if in_plan or catch_up:
                     self._deadline_day = now.date()
                     return True
-                self._waiting_for_hdo = now < deadline or running
+                self._waiting_for_hdo = now < deadline or running or order_active
                 return False
 
             # Unknown future (plain on/off entity): use every HDO window.
             in_window = earliest <= now < deadline and needs_heat
-            if not running and not in_window:
+            order_catch_up = order_active and now >= deadline and needs_heat
+            if not running and not in_window and not order_catch_up:
                 self._deadline_day = None
                 return False
             self._deadline_day = now.date()
@@ -588,9 +803,12 @@ class SwitchedDevice(ManagedDevice):
         self._deadline_info["deadline_mode"] = "just_in_time"
         if self._deadline_day == now.date():
             return True  # already running – continue until target
+        below = self._temperature <= target - self.cfg(CONF_DEADLINE_HYSTERESIS)
+        # Daily: only before the deadline. One-shot order: also catch up after it.
         if (
-            start <= now < deadline
-            and self._temperature <= target - self.cfg(CONF_DEADLINE_HYSTERESIS)
+            start <= now
+            and below
+            and (now < deadline or order_active)
         ):
             self._deadline_day = now.date()
             return True
@@ -619,7 +837,13 @@ class SwitchedDevice(ManagedDevice):
 
     def plan(self, budget: float, headroom: Headroom, now: float) -> float:
         status = self.status
-        status.extra = {"temperature": self._temperature, **self._deadline_info}
+        status.extra = {
+            "temperature": self._temperature,
+            "heat_order": self.heat_order,
+            "max_temperature": self.max_temperature,
+            "supports_order": bool(self.config.get(CONF_TEMPERATURE_SENSOR)),
+            **self._deadline_info,
+        }
         if self.config.get(CONF_LEGIONELLA_ENABLED):
             status.extra["legionella_due"] = self.legionella_due
             status.extra["legionella_last"] = (
@@ -741,10 +965,14 @@ class EvChargerDevice(ManagedDevice):
         self._charge_order: dict[str, Any] | None = None
         # Set when SoC reaches the order target; coordinator consumes for notify/event.
         self._order_completed: dict[str, Any] | None = None
+        # Satisfied calendar charge order – do not re-apply until the event ends.
+        self._calendar_order_done: dict[str, Any] | None = None
         # Fast charge from now: full current until target SoC (ignores surplus/HDO).
         self._boost: dict[str, Any] | None = None
         # Planned absence: leave_at / optional return_at – prefer surplus into EV before leave.
         self._away: dict[str, Any] | None = None
+        # Dismissed calendar away (leave/return) – do not re-apply until the event ends.
+        self._calendar_away_done: dict[str, Any] | None = None
         # House-battery kWh the forecast can refill after leave (info + release battery).
         self.battery_lend_kwh: float = 0.0
         # Afternoon sun covers battery refill + boiler – prefer the car until leave.
@@ -774,6 +1002,8 @@ class EvChargerDevice(ManagedDevice):
             "deadline_day": self._deadline_day.isoformat() if self._deadline_day else None,
             "target_soc_entity_last": self._target_soc_entity_last,
             "charge_order": self._charge_order,
+            "calendar_order_done": self._calendar_order_done,
+            "calendar_away_done": self._calendar_away_done,
             "boost": self._boost,
             "away": self._away,
         })
@@ -798,9 +1028,18 @@ class EvChargerDevice(ManagedDevice):
             self._charge_order = {
                 "soc": float(order["soc"]),
                 "deadline": str(order["deadline"]),
+                "source": str(order.get("source") or "manual"),
             }
         else:
             self._charge_order = None
+        done = data.get("calendar_order_done")
+        if isinstance(done, dict) and done.get("soc") is not None and done.get("deadline"):
+            self._calendar_order_done = {
+                "soc": float(done["soc"]),
+                "deadline": str(done["deadline"]),
+            }
+        else:
+            self._calendar_order_done = None
         boost = data.get("boost")
         if isinstance(boost, dict) and boost.get("soc") is not None:
             self._boost = {"soc": float(boost["soc"])}
@@ -808,12 +1047,23 @@ class EvChargerDevice(ManagedDevice):
             self._boost = None
         away = data.get("away")
         if isinstance(away, dict) and away.get("leave_at"):
-            restored: dict[str, Any] = {"leave_at": str(away["leave_at"])}
+            restored: dict[str, Any] = {
+                "leave_at": str(away["leave_at"]),
+                "source": str(away.get("source") or "manual"),
+            }
             if away.get("return_at"):
                 restored["return_at"] = str(away["return_at"])
             self._away = restored
         else:
             self._away = None
+        away_done = data.get("calendar_away_done")
+        if isinstance(away_done, dict) and away_done.get("leave_at"):
+            restored_done: dict[str, Any] = {"leave_at": str(away_done["leave_at"])}
+            if away_done.get("return_at"):
+                restored_done["return_at"] = str(away_done["return_at"])
+            self._calendar_away_done = restored_done
+        else:
+            self._calendar_away_done = None
 
     def set_charge_order(self, target_soc: float, deadline: datetime) -> dict[str, Any]:
         """One-shot: charge to ``target_soc`` by ``deadline`` (grid/HDO as needed)."""
@@ -821,18 +1071,75 @@ class EvChargerDevice(ManagedDevice):
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=dt_util.now().tzinfo)
         self._boost = None  # order replaces an active boost
-        self._charge_order = {"soc": soc, "deadline": deadline.isoformat()}
+        self._charge_order = {
+            "soc": soc,
+            "deadline": deadline.isoformat(),
+            "source": "manual",
+        }
         return dict(self._charge_order)
 
     def clear_charge_order(self) -> None:
+        """Cancel the active charge order.
+
+        Calendar-sourced clears are remembered so sync does not re-apply the same
+        event until it ends (same as after auto-complete).
+        """
+        order = self._charge_order
+        if order and order.get("source") == "calendar":
+            self._calendar_order_done = {
+                "soc": float(order["soc"]),
+                "deadline": str(order["deadline"]),
+            }
         self._charge_order = None
+
+    def clear_calendar_charge_order(self) -> None:
+        if self._charge_order and self._charge_order.get("source") == "calendar":
+            self._charge_order = None
+        self._calendar_order_done = None
+
+    def release_calendar_order_event(self) -> bool:
+        """Calendar charge-order event ended or was removed; keep unmet catch-up."""
+        changed = False
+        if self._calendar_order_done is not None:
+            self._calendar_order_done = None
+            changed = True
+        return changed
+
+    def set_calendar_charge_order(self, target_soc: float, deadline: datetime) -> None:
+        """Apply calendar order only when no manual order / boost is active."""
+        if self._boost:
+            return  # boost outranks calendar; do not clear it
+        if self._charge_order and self._charge_order.get("source") == "manual":
+            return
+        soc = max(1.0, min(100.0, float(target_soc)))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=dt_util.now().tzinfo)
+        deadline_iso = deadline.isoformat()
+        done = self._calendar_order_done
+        if (
+            done
+            and float(done.get("soc", -1)) == soc
+            and str(done.get("deadline")) == deadline_iso
+        ):
+            return
+        # Already at/above the calendar SoC (e.g. after a manual order / boost) –
+        # mark this event satisfied instead of restarting deadline logic.
+        if self._ev_soc is not None and self._ev_soc >= soc:
+            self._charge_order = None
+            self._calendar_order_done = {"soc": soc, "deadline": deadline_iso}
+            return
+        self._charge_order = {
+            "soc": soc,
+            "deadline": deadline_iso,
+            "source": "calendar",
+        }
 
     def complete_charge_order(self) -> dict[str, Any] | None:
         """Clear because the target SoC was reached; queue a completion event."""
         order = self.charge_order
         if not order:
             return None
-        self._charge_order = None
+        self.clear_charge_order()
         self._order_completed = order
         return order
 
@@ -851,7 +1158,9 @@ class EvChargerDevice(ManagedDevice):
         if target_soc is None:
             target_soc = self.target_soc if self._ev_soc is not None else 100.0
         soc = max(1.0, min(100.0, float(target_soc)))
-        self._charge_order = None  # boost replaces an active order
+        # Drop the active order without marking calendar done – set_calendar_*
+        # already skips while boost is on; after stop_boost the event can return.
+        self._charge_order = None
         self._boost = {"soc": soc}
         return dict(self._boost)
 
@@ -868,7 +1177,7 @@ class EvChargerDevice(ManagedDevice):
         """Plan absence: fill the car before ``leave_at`` (surplus + lendable battery)."""
         if leave_at.tzinfo is None:
             leave_at = leave_at.replace(tzinfo=dt_util.now().tzinfo)
-        away: dict[str, Any] = {"leave_at": leave_at.isoformat()}
+        away: dict[str, Any] = {"leave_at": leave_at.isoformat(), "source": "manual"}
         if return_at is not None:
             if return_at.tzinfo is None:
                 return_at = return_at.replace(tzinfo=leave_at.tzinfo)
@@ -878,7 +1187,49 @@ class EvChargerDevice(ManagedDevice):
         self._away = away
         return dict(self._away)
 
+    def set_calendar_away(
+        self, leave_at: datetime, return_at: datetime | None = None
+    ) -> None:
+        """Apply calendar away only when no manual away is active."""
+        if self._away and self._away.get("source") == "manual":
+            return
+        if leave_at.tzinfo is None:
+            leave_at = leave_at.replace(tzinfo=dt_util.now().tzinfo)
+        leave_iso = leave_at.isoformat()
+        ret_iso: str | None = None
+        if return_at is not None:
+            if return_at.tzinfo is None:
+                return_at = return_at.replace(tzinfo=leave_at.tzinfo)
+            if return_at > leave_at:
+                ret_iso = return_at.isoformat()
+        done = self._calendar_away_done
+        if (
+            done
+            and str(done.get("leave_at")) == leave_iso
+            and done.get("return_at") == ret_iso
+        ):
+            return
+        away: dict[str, Any] = {"leave_at": leave_iso, "source": "calendar"}
+        if ret_iso is not None:
+            away["return_at"] = ret_iso
+        self._away = away
+
+    def clear_calendar_away(self) -> None:
+        """Event gone – drop calendar away and allow a later occurrence."""
+        if self._away and self._away.get("source") == "calendar":
+            self._away = None
+            self.battery_lend_kwh = 0.0
+            self.away_prefer = False
+            self.away_car_budget_kwh = 0.0
+        self._calendar_away_done = None
+
     def clear_away(self) -> None:
+        """Cancel away. Calendar clears are remembered until the event ends."""
+        if self._away and self._away.get("source") == "calendar":
+            done: dict[str, Any] = {"leave_at": str(self._away["leave_at"])}
+            if self._away.get("return_at"):
+                done["return_at"] = str(self._away["return_at"])
+            self._calendar_away_done = done
         self._away = None
         self.battery_lend_kwh = 0.0
         self.away_prefer = False
@@ -1127,6 +1478,20 @@ class EvChargerDevice(ManagedDevice):
             and self._ev_soc < self.cfg(CONF_EV_DEADLINE_SOC)
         )
 
+    @property
+    def wants_surplus_charge(self) -> bool:
+        """Connected and below surplus SoC target – outranks boiler thermal dump."""
+        if self.status.urgent or self.minimum_pending:
+            return False
+        if not bool(self._connected) or self._ev_soc is None:
+            return False
+        # Order hold band: do not claim surplus ahead of the boiler for 80–100 %.
+        if self._charge_order:
+            order_soc = float(self._charge_order["soc"])
+            if order_soc > EV_HOLD_SOC and self._ev_soc >= EV_HOLD_SOC:
+                return False
+        return self._ev_soc < self.target_soc and self._blocked() is None
+
     def _chase_soc(self, final_target: float) -> tuple[float, str]:
         """SoC to chase now: fill to hold first; 80–100 % only just before deadline.
 
@@ -1283,18 +1648,29 @@ class EvChargerDevice(ManagedDevice):
                 else None
             )
             if windows is not None:
-                plan, enough = plan_windows(windows, now, timedelta(hours=hours))
+                plan, enough = plan_windows(
+                    windows, now, timedelta(hours=hours), slack=DEADLINE_FIT_SLACK
+                )
                 self._deadline_info.update(
                     deadline_mode="hdo_plan",
                     deadline_plan=[f"{a:%d.%m. %H:%M}-{b:%H:%M}" for a, b in plan],
                     deadline_at_risk=not enough,
                 )
                 in_plan = any(a <= now < b for a, b in plan)
-                catch_up = running and now >= deadline and bool(self.hdo_active)
+                # One-shot / calendar order: catch up after the deadline even if
+                # charging never started (same idea as boiler heat orders).
+                order_active = source == "order"
+                catch_up = (
+                    (running or order_active)
+                    and now >= deadline
+                    and bool(self.hdo_active)
+                )
                 due = in_plan or catch_up or (running and bool(self.hdo_active))
             else:
                 self._deadline_info["deadline_mode"] = "hdo"
-                due = bool(self.hdo_active) and (running or now < deadline or self._ev_soc < target)
+                due = bool(self.hdo_active) and (
+                    running or now < deadline or self._ev_soc < target
+                )
             if due:
                 self._deadline_active = deadline
                 self._deadline_day = now.date()
@@ -1361,6 +1737,12 @@ class EvChargerDevice(ManagedDevice):
             status.allocated_w = 0.0
             status.reason = blocked
             status.extra = self._extra(self._phases_now, self._current_a)
+            # While unplugged, still count surplus stability so on_delay does not
+            # restart from zero the moment the cable is plugged in.
+            if blocked == "not_connected":
+                self._tick_start_ready(budget, headroom, now)
+            else:
+                self._on_debounce.reset()
             return 0.0
 
         self._plan_now = now
@@ -1436,6 +1818,17 @@ class EvChargerDevice(ManagedDevice):
                 round(self.away_car_budget_kwh, 2) if self._away else None
             ),
         }
+
+    def _tick_start_ready(self, budget: float, headroom: Headroom, now: float) -> None:
+        """Advance on_delay while unplugged if surplus would already allow a start."""
+        phases = self._choose_phases(budget, now, charging=False)
+        min_w = self._power(self.min_a, phases)
+        borrow = self._power(1, phases) * BORROW_STEP_SHARE if self.borrow else 0.0
+        start_ok = (
+            budget + borrow >= min_w + self.cfg(CONF_ON_MARGIN) and headroom.watts(phases) >= min_w
+        )
+        self._off_debounce.reset()
+        self._on_debounce.check(start_ok, now, self.cfg(CONF_ON_DELAY))
 
     def _damp(self, wanted: int, current: int, budget: float, phases: int, now: float) -> int:
         """Avoid hunting the current on a fluctuating surplus.

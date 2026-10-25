@@ -240,6 +240,94 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             supports_response=SupportsResponse.OPTIONAL,
         )
 
+    if not hass.services.has_service(DOMAIN, "set_heat_order"):
+
+        async def set_heat_order(call: ServiceCall) -> ServiceResponse:
+            """One-shot: heat a boiler to target temperature by the given deadline."""
+            result = await _call_on_matching_entry(
+                hass,
+                lambda c: c.async_set_heat_order(
+                    target_temp=call.data["target_temp"],
+                    deadline=call.data["deadline"],
+                    device_id=call.data.get("device_id"),
+                    name=call.data.get("name"),
+                ),
+            )
+            return {"orders": [result]}
+
+        async def clear_heat_order(call: ServiceCall) -> ServiceResponse:
+            """Cancel an active boiler heat order."""
+            result = await _call_on_matching_entry(
+                hass,
+                lambda c: c.async_clear_heat_order(
+                    device_id=call.data.get("device_id"),
+                    name=call.data.get("name"),
+                ),
+            )
+            return {"cleared": [result]}
+
+        async def set_device_order(call: ServiceCall) -> ServiceResponse:
+            """One-shot order for EV (SoC) or boiler (temperature)."""
+            result = await _call_on_matching_entry(
+                hass,
+                lambda c: c.async_set_device_order(
+                    deadline=call.data["deadline"],
+                    target_soc=call.data.get("target_soc"),
+                    target_temp=call.data.get("target_temp"),
+                    device_id=call.data.get("device_id"),
+                    name=call.data.get("name"),
+                ),
+            )
+            return {"orders": [result]}
+
+        hass.services.async_register(
+            DOMAIN,
+            "set_heat_order",
+            set_heat_order,
+            schema=vol.Schema(
+                {
+                    vol.Required("target_temp"): vol.All(
+                        vol.Coerce(float), vol.Range(min=20, max=95)
+                    ),
+                    vol.Required("deadline"): cv.datetime,
+                    vol.Optional("device_id"): str,
+                    vol.Optional("name"): str,
+                }
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            "clear_heat_order",
+            clear_heat_order,
+            schema=vol.Schema(
+                {
+                    vol.Optional("device_id"): str,
+                    vol.Optional("name"): str,
+                }
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+        hass.services.async_register(
+            DOMAIN,
+            "set_device_order",
+            set_device_order,
+            schema=vol.Schema(
+                {
+                    vol.Required("deadline"): cv.datetime,
+                    vol.Optional("target_soc"): vol.All(
+                        vol.Coerce(float), vol.Range(min=1, max=100)
+                    ),
+                    vol.Optional("target_temp"): vol.All(
+                        vol.Coerce(float), vol.Range(min=20, max=95)
+                    ),
+                    vol.Optional("device_id"): str,
+                    vol.Optional("name"): str,
+                }
+            ),
+            supports_response=SupportsResponse.OPTIONAL,
+        )
+
     if not hass.services.has_service(DOMAIN, "start_ev_boost"):
 
         async def start_ev_boost(call: ServiceCall) -> ServiceResponse:

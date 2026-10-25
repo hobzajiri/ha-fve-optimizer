@@ -83,6 +83,11 @@ simulator = {
 }
 control = entities_card("Řízení", [hub("enabled"), hub("dry_run")] + [dev(sid, "control") for sid in subs])
 
+def fve_card(sections):
+    """Always use the base card tag – preset tags race Lovelace before JS loads."""
+    return {"type": "custom:fve-optimizer-card", "entity": status, "sections": sections} if status else None
+
+
 dashboard = {
     "title": "Simulátor",
     "views": [
@@ -94,16 +99,34 @@ dashboard = {
             "sections": [
                 {"type": "grid", "cards": [simulator]},
                 {"type": "grid", "cards": [c for c in (
-                    {"type": "custom:fve-optimizer-card", "entity": status,
-                     "sections": ["summary", "devices"]} if status else None,
+                    fve_card(["summary", "devices"]),
                 ) if c]},
                 {"type": "grid", "cards": [c for c in (
                     control,
-                    {"type": "custom:fve-optimizer-card", "entity": status, "sections": ["log"]}
-                    if status else None,
+                    fve_card(["log"]),
                 ) if c]},
             ],
-        }
+        },
+        {
+            "title": "Přehled",
+            "path": "overview",
+            "type": "sections",
+            "max_columns": 3,
+            "sections": [
+                {"type": "grid", "cards": [c for c in (
+                    fve_card(["outlook"]),
+                    fve_card(["allocation"]),
+                ) if c]},
+                {"type": "grid", "cards": [c for c in (
+                    fve_card(["status", "devices"]),
+                ) if c]},
+                {"type": "grid", "cards": [c for c in (
+                    control,
+                    fve_card(["log"]),
+                    fve_card(["review"]),
+                ) if c]},
+            ],
+        },
     ],
 }
 

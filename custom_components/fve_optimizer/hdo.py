@@ -459,12 +459,19 @@ class HdoSchedule:
 
 
 def plan_windows(
-    windows: list[Window], now: datetime, needed: timedelta
+    windows: list[Window],
+    now: datetime,
+    needed: timedelta,
+    *,
+    slack: timedelta = timedelta(0),
 ) -> tuple[list[Window], bool]:
     """Pick the latest windows (before the deadline) that give ``needed`` time.
 
     ``windows`` are already clipped to [earliest, deadline]. Past parts are
     dropped. Returns (chosen windows, enough time available).
+
+    ``slack`` forgives a tiny shortfall (rounding / heating-time margin noise)
+    so e.g. 1.01 h needed in a 1 h HDO slot is still considered enough.
     """
     remaining = needed
     chosen: list[Window] = []
@@ -479,7 +486,7 @@ def plan_windows(
         else:
             chosen.append((start, end))
             remaining -= length
-    return sorted(chosen), remaining <= timedelta(0)
+    return sorted(chosen), remaining <= slack
 
 
 def settings_from_conf(conf: dict[str, Any], get: Callable[[str], Any] | None = None) -> HdoSettings:

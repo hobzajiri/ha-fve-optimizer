@@ -91,7 +91,8 @@
           "notify_on_failsafe": "Notify on fail-safe",
           "notify_on_at_risk": "Notify when a deadline is at risk",
           "notify_on_boost": "Notify on EV boost",
-          "notify_on_order": "Notify on EV charge order"
+          "notify_on_order": "Notify on EV charge order",
+          "schedule_calendar": "Schedule calendar (optional)"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -118,7 +119,8 @@
           "notify_on_failsafe": "When inverter data is lost and when it returns.",
           "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
           "notify_on_boost": "When fast EV charging starts or ends.",
-          "notify_on_order": "When an EV charge order is set or cleared."
+          "notify_on_order": "When an EV charge order is set or cleared.",
+          "schedule_calendar": "Local Calendar / Google Calendar events drive orders for all devices. Examples: Bojler: 55°C, EcoVolter: 80% (event end = deadline); Bojler: max 45°C (while active); EcoVolter: away (start = leave / prep before, end = return). Manual orders take priority."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -277,7 +279,8 @@
           "notify_on_failsafe": "Notify on fail-safe",
           "notify_on_at_risk": "Notify when a deadline is at risk",
           "notify_on_boost": "Notify on EV boost",
-          "notify_on_order": "Notify on EV charge order"
+          "notify_on_order": "Notify on EV charge order",
+          "schedule_calendar": "Schedule calendar (optional)"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -304,7 +307,8 @@
           "notify_on_failsafe": "When inverter data is lost and when it returns.",
           "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
           "notify_on_boost": "When fast EV charging starts or ends.",
-          "notify_on_order": "When an EV charge order is set or cleared."
+          "notify_on_order": "When an EV charge order is set or cleared.",
+          "schedule_calendar": "Local Calendar / Google Calendar events drive orders for all devices. Examples: Bojler: 55°C, EcoVolter: 80% (event end = deadline); Bojler: max 45°C (while active); EcoVolter: away (start = leave / prep before, end = return). Manual orders take priority."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -401,7 +405,7 @@
             "deadline_temperature": "Deadline temperature",
             "tank_volume_l": "Tank volume",
             "deadline_hysteresis": "Deadline hysteresis",
-            "deadline_safety_factor": "Heating time margin",
+            "deadline_safety_factor": "Heating time factor",
             "max_temperature_hysteresis": "Maximum temperature hysteresis",
             "deadline_hdo_only": "Deadline heating only in HDO",
             "deadline_earliest": "Grid heating not before",
@@ -419,7 +423,7 @@
             "deadline_enabled": "If the water will not reach the temperature by the given time, the boiler is topped up without surplus (in HDO or just before the deadline). Needs a temperature sensor.",
             "tank_volume_l": "Used to compute when to start heating.",
             "deadline_hysteresis": "Deadline heating starts only when the water is at least this much below the target.",
-            "deadline_safety_factor": "1.2 = starts 20% earlier than computed.",
+            "deadline_safety_factor": "Multiplies computed heat-up time. 1.0 = theory (1.163 Wh/L·K). Above 1 = margin (starts earlier / needs more off-peak). Below 1 = real heat-up is faster (calibrate when “at risk” falsely trips on a tight off-peak window).",
             "max_temperature_hysteresis": "After reaching the maximum, surplus heating resumes only after the water cools by this much.",
             "deadline_hdo_only": "On: what the solar forecast will not cover is heated from the grid only in low tariff – in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
             "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
@@ -450,7 +454,7 @@
             "deadline_temperature": "Deadline temperature",
             "tank_volume_l": "Tank volume",
             "deadline_hysteresis": "Deadline hysteresis",
-            "deadline_safety_factor": "Heating time margin",
+            "deadline_safety_factor": "Heating time factor",
             "max_temperature_hysteresis": "Maximum temperature hysteresis",
             "deadline_hdo_only": "Deadline heating only in HDO",
             "deadline_earliest": "Grid heating not before",
@@ -468,7 +472,7 @@
             "deadline_enabled": "If the water will not reach the temperature by the given time, the boiler is topped up without surplus (in HDO or just before the deadline). Needs a temperature sensor.",
             "tank_volume_l": "Used to compute when to start heating.",
             "deadline_hysteresis": "Deadline heating starts only when the water is at least this much below the target.",
-            "deadline_safety_factor": "1.2 = starts 20% earlier than computed.",
+            "deadline_safety_factor": "Multiplies computed heat-up time. 1.0 = theory (1.163 Wh/L·K). Above 1 = margin (starts earlier / needs more off-peak). Below 1 = real heat-up is faster (calibrate when “at risk” falsely trips on a tight off-peak window).",
             "max_temperature_hysteresis": "After reaching the maximum, surplus heating resumes only after the water cools by this much.",
             "deadline_hdo_only": "On: what the solar forecast will not cover is heated from the grid only in low tariff – in the latest HDO windows before the deadline. Off: just before the deadline at any time.",
             "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
@@ -874,7 +878,7 @@
         "name": "Deadline hysteresis"
       },
       "device_deadline_safety_factor": {
-        "name": "Heating time margin"
+        "name": "Heating time factor"
       },
       "device_max_temperature_hysteresis": {
         "name": "Maximum temperature hysteresis"

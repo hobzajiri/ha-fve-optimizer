@@ -18,17 +18,10 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_AI_TASK_ENTITY,
-    CONF_BATTERY_BORROW,
-    CONF_FORECAST_MIN_SOC,
-    CONF_FORECAST_SAFETY,
     CONF_MIN_OFF_TIME,
     CONF_MIN_ON_TIME,
     CONF_OFF_DELAY,
-    CONF_OFF_TOLERANCE,
     CONF_ON_DELAY,
-    CONF_ON_MARGIN,
-    CONF_PRIORITY,
-    CONF_RESERVE_W,
     DEVICE_TUNABLES,
     HUB_TUNABLES,
     Tunable,
@@ -50,22 +43,20 @@ _HUB_SETTINGS_SKIP_PREFIXES = ("ai_", "notify_")
 _HUB_SETTINGS_SKIP = frozenset({"persistent_notification", "ai_task_entity", "notify_service"})
 
 # Soft tunables AI may propose (apply only after user approval).
-PROPOSAL_MAX = 5
-HUB_PROPOSAL_KEYS = frozenset({
-    CONF_RESERVE_W,
-    CONF_FORECAST_SAFETY,
-    CONF_BATTERY_BORROW,
-    CONF_FORECAST_MIN_SOC,
-})
-DEVICE_PROPOSAL_KEYS = frozenset({
-    CONF_ON_DELAY,
-    CONF_OFF_DELAY,
-    CONF_ON_MARGIN,
-    CONF_OFF_TOLERANCE,
-    CONF_MIN_ON_TIME,
-    CONF_MIN_OFF_TIME,
-    CONF_PRIORITY,
-})
+# All energy-related hub/device tunables – not AI/notify plumbing.
+PROPOSAL_MAX = 15
+
+
+def _proposal_key_ok(key: str) -> bool:
+    if key in _HUB_SETTINGS_SKIP:
+        return False
+    return not any(key.startswith(p) for p in _HUB_SETTINGS_SKIP_PREFIXES)
+
+
+HUB_PROPOSAL_KEYS = frozenset(t.key for t in HUB_TUNABLES if _proposal_key_ok(t.key))
+DEVICE_PROPOSAL_KEYS = frozenset(
+    t.key for tunables in DEVICE_TUNABLES.values() for t in tunables
+)
 _DELAY_PROPOSAL_KEYS = frozenset({
     CONF_ON_DELAY,
     CONF_OFF_DELAY,
@@ -125,8 +116,9 @@ Spínání – jen skutečná sepnutí relé / nabíjení:
   integrace přehlédla? „recommendations“ a „plan_match_pct“ k tomu pomáhají.
 
 Konkrétní oblasti (uveď jen když data ukazují problém nebo příležitost):
-- termíny at_risk / málo NT oken → dřívější deadline_earliest, vyšší safety, vypnout
-  hdo_only, nebo snížit cíl minima;
+- termíny at_risk / málo NT oken → nejdřív deadline_safety_factor (kalibrace: <1 když
+  výpočet přehání a „nestíhá“ těsně v NT), pak dřívější deadline_earliest nebo nižší
+  cíl minima; vypnutí deadline_hdo_only jen jako krajní možnost (dohřev i ve VT);
 - forecast nestačí na baterii a zařízení bez termínu = OK (mají čekat); se zapnutým
   termínem mají jít ze sítě / NT;
 - vysoký export + nízké využití zařízení při „devices first“ → limity teploty/SoC
@@ -146,15 +138,15 @@ Pole „outlook“ ve tvé odpovědi: večer / po západu (hours_until_sunset �
 hodnocení typicky kolem 21:00) shrň srovnání s ránem v 1–3 odrážkách, nebo
 krátce zítřek – nedramatizuj „zbytek dne“. Jinak shrň rizika z JSON outlooku.
 
-Buď konkrétní a stručný, piš česky. Návrhy úprav uváděj jen tehdy, když je data
-opravdu podporují:
-- v „suggestions“ text: „Zařízení – klíč_parametru: z X na Y – důvod“ (nebo „Žádné“);
-- v „proposals“ JSON pole max 5 objektů
-  {"target":"Bojler"|"hub","key":"off_delay_s","from":60,"to":180,"reason":"…"}
-  nebo [] / „Žádné“. Klíč přesně z „settings“. Povoleno jen: on_delay_s, off_delay_s,
-  on_margin_w, off_tolerance_w, min_on_time_s, min_off_time_s, priority, reserve_w,
-  forecast_safety_factor, battery_borrow, forecast_min_soc.
-Nic sama neměň – návrhy schválí uživatel. Nevymýšlej jiné parametry ani entity.
+Buď konkrétní a stručný, piš česky. Navrhuj všechna nastavení z „settings“, která
+podle dat zlepší provoz (nejen delaye):
+- v „suggestions“ text: „Zařízení|hub – klíč_parametru: z X na Y – důvod“ (nebo „Žádné");
+- v „proposals“ JSON pole max 15 objektů
+  {"target":"Bojler"|"hub","key":"deadline_safety_factor","from":1.2,"to":1.0,"reason":"…"}
+  nebo [] / „Žádné“. Klíč přesně z „settings“ (hub i zařízení: termíny, SoC, HDO,
+  teploty, proudy, export, rezervy, delaye…). Časy jako "HH:MM:SS", přepínače true/false.
+  Nenavrhuj klíče ai_* / notify_* / persistent_notification.
+Nic sama neměň – návrhy schválí uživatel. Nevymýšlej entity ani klíče mimo settings.
 
 Data dne:
 """
@@ -185,17 +177,17 @@ STRUCTURE: dict[str, Any] = {
     },
     "suggestions": {
         "description": (
-            "Návrhy úprav – každý na řádek „Zařízení – klíč_z_settings: z X na Y – důvod“, "
-            "nebo „Žádné“"
+            "Návrhy všech smysluplných úprav z settings – každý na řádek "
+            "„Zařízení|hub – klíč: z X na Y – důvod“, nebo „Žádné“"
         ),
         "required": True,
         "selector": {"text": {"multiline": True}},
     },
     "proposals": {
         "description": (
-            "JSON pole max 5 návrhů nastavení: "
-            '[{"target":"Bojler"|"hub","key":"off_delay_s","from":60,"to":180,'
-            '"reason":"krátký důvod"}] nebo [] / Žádné. Jen povolené klíče z instrukcí.'
+            "JSON pole max 15 návrhů libovolných klíčů z settings (hub i zařízení): "
+            '[{"target":"Bojler"|"hub","key":"deadline_safety_factor","from":1.2,"to":1.0,'
+            '"reason":"krátký důvod"}] nebo [] / Žádné. Ne ai_*/notify_*.'
         ),
         "required": True,
         "selector": {"text": {"multiline": True}},
@@ -313,6 +305,9 @@ def build_outlook(
                 "remaining_kwh": snap.forecast_remaining_kwh,
                 "need_kwh": snap.forecast_need_kwh,
                 "covers_battery": snap.forecast_covers_battery,
+                "battery_kwh": snap.forecast_battery_kwh,
+                "house_kwh": snap.forecast_house_kwh,
+                "margin_kwh": snap.forecast_margin_kwh,
                 "solar_for_devices_kwh": snap.solar_for_devices_kwh,
                 "hours_until_sunset": snap.hours_until_sunset,
             },
@@ -638,6 +633,19 @@ def _parse_bool(value: Any) -> bool | None:
     return None
 
 
+def _parse_time(value: Any) -> str | None:
+    """Normalize AI time to HH:MM:SS for time tunables."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed = dt_util.parse_time(text)
+    if parsed is None:
+        return None
+    return parsed.strftime("%H:%M:%S")
+
+
 def _snap_number(value: float, tunable: Tunable) -> float:
     mn, mx = float(tunable.minimum), float(tunable.maximum)
     step = float(tunable.step or 1)
@@ -815,6 +823,49 @@ def parse_proposals(
                         "reason": reason,
                         "status": "invalid",
                         "error": "bad_bool",
+                    }
+                )
+                continue
+            if to_val == from_val:
+                continue
+        elif tunable.kind == "time":
+            to_val = _parse_time(item.get("to"))
+            from_val = _parse_time(item.get("from")) or _parse_time(current)
+            if to_val is None or from_val is None:
+                out.append(
+                    {
+                        "id": _proposal_id(target_label, key, item.get("to")),
+                        "target": target_label,
+                        "key": key,
+                        "scope": scope,
+                        "subentry_id": subentry_id,
+                        "from": item.get("from"),
+                        "to": item.get("to"),
+                        "reason": reason,
+                        "status": "invalid",
+                        "error": "bad_time",
+                    }
+                )
+                continue
+            if to_val == from_val:
+                continue
+        elif tunable.kind == "select":
+            to_val = str(item.get("to")).strip()
+            from_val = str(item.get("from") if item.get("from") is not None else current).strip()
+            opts = set(tunable.options or ())
+            if not to_val or (opts and to_val not in opts):
+                out.append(
+                    {
+                        "id": _proposal_id(target_label, key, item.get("to")),
+                        "target": target_label,
+                        "key": key,
+                        "scope": scope,
+                        "subentry_id": subentry_id,
+                        "from": item.get("from"),
+                        "to": item.get("to"),
+                        "reason": reason,
+                        "status": "invalid",
+                        "error": "bad_select",
                     }
                 )
                 continue
@@ -1005,7 +1056,16 @@ Jsi energetický poradce. Integrace FVE Optimizer hlásí, že zařízení nest�
 (at_risk). Dostaneš aktuální „outlook“ (predikce, plán HDO, potřeba kWh) a nastavení.
 Navrhni 1–3 konkrétní kroky pro uživatele (změna parametru, ruční zásah, nebo „počkat
 na NT“). Piš česky, stručně. Nic sám neměň – jen poradíš. Parametry uváděj přesnými
-klíči z nastavení (např. deadline_earliest, off_delay_s).
+klíči z nastavení (např. deadline_earliest, deadline_safety_factor).
+
+Pravidla:
+- Priorita: navrhnout úpravu deadline_safety_factor na příště (kalibrace rychlosti
+  ohřevu). Násobí vypočtenou dobu: >1 = rezerva, <1 = ohřev je rychlejší než teorie.
+  Když potřeba jen těsně přesahuje NT okno (např. 1,01 h v 1h okně), navrhni snížit
+  koeficient (typicky směrem k 0,9–1,0) místo dramatických zásahů.
+- Vypnutí deadline_hdo_only (dohřev i ve VT) nebo snížení deadline_temperature smíš
+  zmínit, ale až jako volitelnou krajní možnost – ne jako první radu, když stačí
+  kalibrace koeficientu nebo počkat na NT.
 
 Data:
 """

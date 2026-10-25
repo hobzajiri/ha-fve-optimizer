@@ -77,6 +77,86 @@ clear_ev_charge_order:
       name: Device id
       selector:
         text:
+set_heat_order:
+  name: Set boiler heat order
+  description: >
+    One-shot heat to a temperature by a deadline. Uses surplus first, then
+    grid / HDO like the daily deadline. Cleared when the temperature is reached.
+  fields:
+    target_temp:
+      name: Target temperature
+      required: true
+      example: 55
+      selector:
+        number:
+          min: 20
+          max: 95
+          step: 0.5
+          unit_of_measurement: "°C"
+    deadline:
+      name: Deadline
+      required: true
+      example: "2026-10-06 18:00:00"
+      selector:
+        datetime:
+    name:
+      name: Device name
+      example: Bojler
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
+clear_heat_order:
+  name: Clear boiler heat order
+  description: Cancel the active one-shot boiler heat order.
+  fields:
+    name:
+      name: Device name
+      example: Bojler
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
+set_device_order:
+  name: Set device order
+  description: >
+    One-shot order for an EV (target_soc) or boiler (target_temp) by a deadline.
+  fields:
+    deadline:
+      name: Deadline
+      required: true
+      example: "2026-10-06 07:00:00"
+      selector:
+        datetime:
+    target_soc:
+      name: Target SoC
+      example: 90
+      selector:
+        number:
+          min: 1
+          max: 100
+          unit_of_measurement: "%"
+    target_temp:
+      name: Target temperature
+      example: 55
+      selector:
+        number:
+          min: 20
+          max: 95
+          step: 0.5
+          unit_of_measurement: "°C"
+    name:
+      name: Device name
+      selector:
+        text:
+    device_id:
+      name: Device id
+      selector:
+        text:
 start_ev_boost:
   name: Start EV fast charge
   description: >

@@ -84,6 +84,7 @@ from .const import (
     CONF_NOTIFY_ON_FAILSAFE,
     CONF_NOTIFY_ON_ORDER,
     CONF_NOTIFY_ON_REVIEW,
+    CONF_SCHEDULE_CALENDAR,
     CONF_NOTIFY_REVIEW_MAX_SCORE,
     CONF_NOTIFY_SERVICE,
     CONF_PERSISTENT_NOTIFICATION,
@@ -267,6 +268,7 @@ def _control_schema(v: dict[str, Any]) -> vol.Schema:
             _req(CONF_NOTIFY_ON_AT_RISK, v, DEFAULTS): selector.BooleanSelector(),
             _req(CONF_NOTIFY_ON_BOOST, v, DEFAULTS): selector.BooleanSelector(),
             _req(CONF_NOTIFY_ON_ORDER, v, DEFAULTS): selector.BooleanSelector(),
+            _opt(CONF_SCHEDULE_CALENDAR, v): _entity("calendar"),
         }
     )
 

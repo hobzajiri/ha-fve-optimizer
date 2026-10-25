@@ -66,10 +66,26 @@ stejně jako bojler dvě teploty:
   se uvolní. Ranní termín smí jet i nad surplus maximum až do minimálního SoC.
 * **Minimální SoC v termínu** (např. 60 % do 07:00): garantované minimum, viz níže.
 
-**Objednávka nabití**: na kartě u nabíječky (Cíl % + termín → Objednat), nebo
-služba `fve_optimizer.set_ev_charge_order`. Respektuje HDO. **Do 80 %** se
-dobíjí dřív (přebytek / NT okna); **80–100 %** až těsně před termínem.
-Zrušení na kartě nebo `clear_ev_charge_order`.
+**Objednávka nabití**: na kartě u nabíječky (Cíl % + datum/čas → Objednat), nebo
+služba `fve_optimizer.set_ev_charge_order` (alias `set_device_order` s
+`target_soc`). Respektuje HDO. **Do 80 %** se dobíjí dřív (přebytek / NT okna);
+**80–100 %** až těsně před termínem. Zrušení na kartě nebo `clear_ev_charge_order`.
+
+**Objednávka ohřevu (bojler)**: na kartě u zařízení s teplotním senzorem
+(Cíl °C + datum/čas → Objednat), nebo `fve_optimizer.set_heat_order` /
+`set_device_order` s `target_temp`. Stejná filozofie jako denní termín
+(přebytky, jinak NT / těsně před termínem). Zrušení `clear_heat_order`.
+
+**Kalendář plánování** (volitelný v nastavení hubu – Control): jedna entita
+`calendar.*` (Local Calendar, Google…). Události řídí všechna zařízení podle
+**názvu** (stejného jako u subentry). Ruční objednávka má přednost.
+
+| Souhrn události | Význam |
+|-----------------|--------|
+| `Bojler: 55°C` | Nahřát na 55 °C; **konec události = termín** |
+| `EcoVolter: 80%` | Nabít na 80 %; konec = termín |
+| `Bojler: max 45°C` | Po dobu události strop přebytků 45 °C |
+| `EcoVolter: away` | Odjezd: **start** = leave (příprava auta před startem), **konec** = návrat |
 
 **Rychlé nabíjení**: tlačítko na kartě / `start_ev_boost` — od teď naplno
 (bez HDO), s odhadem času. Stop na kartě nebo `stop_ev_boost`.
@@ -114,7 +130,10 @@ v atributu `details`.
    ztrátami. Vypíná se přepínačem **Minimum před baterií**.
 3. **Baterie** do cílového SoC – dokud má přednost, zařízení dostanou jen
    přebytek nad **Max. nabíjecí výkon baterie** a i běžící zařízení uhnou.
-4. **Ostatní** podle priority (ohřev nad minimum, nabíjení nad minimum…).
+4. **Ostatní** podle priority. **Auto pod cílovým SoC z přebytků** má přednost
+   před ohřevem bojleru **nad teplotou v termínu** (sklad tepla do max. teploty,
+   např. 74 °C) – není potřeba večer ručně přehazovat priority. Termín / minimum
+   bojleru i auta zůstávají výš (kroky 1–2).
 
 ### Dorovnání z plné baterie
 
@@ -130,14 +149,33 @@ a rozdíl, nejvýš polovinu kroku, dorovná baterie. Přebytek tak neteče do s
 
 ### Karta FVE Optimizer
 
-Integrace přináší vlastní kartu (bez HACS) s rozhodnutím: souhrn (režim, priorita,
-přebytek, predikce, tarif, limit přetoku, jistič), řízená zařízení s doporučením
-(v režimu Jen sledovat s tlačítkem Provést) a log. Na toky energie použij např. Power Flow Card
-Plus; vlastní schéma toků jde zapnout částí `flow`. Obnovuje se každý cyklus.
-Pomocí `sections` jde kartu rozdělit do více sloupců, např. jedna karta
-s doporučeními a druhá jen s logem
-(`sections: [log]`). Log ukazuje jen to, co se oproti předchozímu rozhodnutí
-změnilo; celé rozhodnutí je v nápovědě po najetí myší.
+Integrace přináší vlastní kartu (bez HACS) s rozhodnutím: předpoklad dne,
+rozdělení rozpočtu, stav sítě/baterie/zařízení (v režimu Jen sledovat s tlačítkem
+Provést) a log. Na toky energie použij např. Power Flow Card Plus; vlastní schéma
+toků jde zapnout částí `flow`. Obnovuje se každý cyklus.
+
+#### Na vlastní stránku dashboardu
+
+V editoru dashboardu: **Přidat kartu** → vyber jednu z variant **FVE Optimizer …**
+(entita `sensor.…_status` se doplní sama, pokud je integrace nastavená). Stejné
+varianty jde zapsat ručně v YAML – vždy stejná entita, liší se jen `sections`.
+
+| Varianta ve výběru | YAML (stejná karta, jiné `sections`) |
+|---|---|
+| FVE Optimizer | `type: custom:fve-optimizer-card` + `sections: [summary, devices, log]` |
+| FVE Optimizer – Předpoklad dne | `sections: [outlook]` |
+| FVE Optimizer – Rozdělení | `sections: [allocation]` |
+| FVE Optimizer – Stav | `sections: [status, devices]` |
+| FVE Optimizer – Rozhodnutí | `sections: [log]` |
+| FVE Optimizer – Hodnocení | `sections: [review]` |
+
+Ve výběru karet jsou i zkratky (`fve-optimizer-outlook-card` …); v YAML dashboardu raději používej
+`custom:fve-optimizer-card` + `sections` – spolehlivěji se načte při startu frontend.
+
+Části (`sections`): `outlook` (predikce a předpoklad dne), `allocation` (rozdělení),
+`status` (síť / baterie), `devices` (řízená zařízení), `log`, `review`, `flow`.
+`summary` = `outlook` + `allocation` + `status` (zpětná kompatibilita). Log ukazuje
+jen změny oproti předchozímu rozhodnutí; celé znění je v nápovědě po najetí myší.
 
 ```yaml
 type: custom:fve-optimizer-card
@@ -201,8 +239,9 @@ nemění.
 * **Večerní hodnocení** (výchozí 21:00): známka, shrnutí, návrhy; porovná den
   s ranním plánem a vysvětlí odchylky. Entita *AI hodnocení*, panel →
   **Hodnocení**, služba `fve_optimizer.run_review`.
-* **Návrhy nastavení se schválením**: AI vrátí strukturované změny tunables
-  (delay, rezerva…). Nic sama nezapíše – na kartě **Použít** / **Zamítnout**,
+* **Návrhy nastavení se schválením**: AI vrátí strukturované změny libovolných
+  energetických tunables z nastavení (delaye, termíny, SoC, HDO, teploty, export,
+  rezervy…). Nic sama nezapíše – na kartě **Použít** / **Zamítnout**,
   nebo služby `fve_optimizer.apply_ai_proposal` /
   `fve_optimizer.dismiss_ai_proposal`. Dispečer dál spíná zařízení.
 * Po hodnocení můžeš na kartě **zeptat se** na shrnutí / návrhy (služba

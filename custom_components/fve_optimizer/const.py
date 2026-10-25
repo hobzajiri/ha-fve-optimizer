@@ -87,6 +87,9 @@ CONF_NOTIFY_ON_AT_RISK: Final = "notify_on_at_risk"
 CONF_NOTIFY_ON_BOOST: Final = "notify_on_boost"
 CONF_NOTIFY_ON_ORDER: Final = "notify_on_order"
 
+# Optional HA calendar whose events drive device orders / away / max-temp caps
+CONF_SCHEDULE_CALENDAR: Final = "schedule_calendar"
+
 DEFAULTS: Final[dict[str, object]] = {
     CONF_GRID_IMPORT_POSITIVE: True,
     CONF_BATTERY_CHARGE_POSITIVE: True,
@@ -320,7 +323,8 @@ DEVICE_TUNABLES: Final[dict[str, tuple[Tunable, ...]]] = {
         Tunable(CONF_DEADLINE_TEMPERATURE, 20, 95, 0.5, "°C", requires=CONF_TEMPERATURE_SENSOR),
         Tunable(CONF_DEADLINE_HYSTERESIS, 0, 10, 0.5, "°C", requires=CONF_TEMPERATURE_SENSOR),
         Tunable(CONF_TANK_VOLUME, 10, 2000, 10, "L", requires=CONF_TEMPERATURE_SENSOR),
-        Tunable(CONF_DEADLINE_SAFETY, 1, 3, 0.05, requires=CONF_TEMPERATURE_SENSOR),
+        # <1 = real heat-up faster than theory (sensor/stratification); >1 = margin.
+        Tunable(CONF_DEADLINE_SAFETY, 0.7, 3, 0.05, requires=CONF_TEMPERATURE_SENSOR),
         Tunable(CONF_LEGIONELLA_ENABLED, kind="switch", requires=CONF_TEMPERATURE_SENSOR),
         Tunable(CONF_LEGIONELLA_TEMPERATURE, 55, 90, 0.5, "°C", requires=CONF_TEMPERATURE_SENSOR),
         Tunable(CONF_LEGIONELLA_INTERVAL_DAYS, 1, 60, 1, "d", requires=CONF_TEMPERATURE_SENSOR),
@@ -340,7 +344,7 @@ DEVICE_TUNABLES: Final[dict[str, tuple[Tunable, ...]]] = {
         Tunable(CONF_MIN_BEFORE_BATTERY, kind="switch", requires=CONF_EV_SOC_SENSOR),
         Tunable(CONF_EV_CAPACITY, 5, 200, 0.5, "kWh", requires=CONF_EV_SOC_SENSOR),
         Tunable(CONF_EV_EFFICIENCY, 0.5, 1, 0.01, requires=CONF_EV_SOC_SENSOR),
-        Tunable(CONF_EV_DEADLINE_SAFETY, 1, 3, 0.05, requires=CONF_EV_SOC_SENSOR),
+        Tunable(CONF_EV_DEADLINE_SAFETY, 0.7, 3, 0.05, requires=CONF_EV_SOC_SENSOR),
     ),
 }
 

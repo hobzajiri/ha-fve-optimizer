@@ -340,6 +340,13 @@ async def test_forecast_lowers_battery_target(hass: HomeAssistant) -> None:
     assert coordinator.data.forecast_covers_battery
     assert coordinator.data.effective_target_soc == 50.0
     assert not coordinator.data.battery_priority
+    parts = coordinator.data.live_data["forecast_parts"]
+    assert parts["battery_kwh"] is not None
+    assert parts["house_kwh"] is not None
+    assert parts["margin_kwh"] is not None
+    assert round(
+        parts["battery_kwh"] + parts["house_kwh"] + parts["margin_kwh"], 2
+    ) == coordinator.data.forecast_need_kwh
 
 
 async def test_breaker_limits_ev_current(hass: HomeAssistant) -> None:

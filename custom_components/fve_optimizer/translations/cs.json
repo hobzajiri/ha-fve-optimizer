@@ -91,7 +91,8 @@
           "notify_on_failsafe": "Notifikovat při pojistce",
           "notify_on_at_risk": "Notifikovat při riziku termínu",
           "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
-          "notify_on_order": "Notifikovat při objednávce EV"
+          "notify_on_order": "Notifikovat při objednávce EV",
+          "schedule_calendar": "Kalendář plánování (volitelný)"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -118,7 +119,8 @@
           "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
           "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
           "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
-          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV.",
+          "schedule_calendar": "Události Local Calendar / Google Calendar řídí objednávky všech zařízení. Příklady: Bojler: 55°C, EcoVolter: 80% (konec = termín); Bojler: max 45°C (po dobu události); EcoVolter: away (start = odjezd / příprava předtím, konec = návrat). Ruční objednávka má přednost."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -277,7 +279,8 @@
           "notify_on_failsafe": "Notifikovat při pojistce",
           "notify_on_at_risk": "Notifikovat při riziku termínu",
           "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
-          "notify_on_order": "Notifikovat při objednávce EV"
+          "notify_on_order": "Notifikovat při objednávce EV",
+          "schedule_calendar": "Kalendář plánování (volitelný)"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -304,7 +307,8 @@
           "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
           "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
           "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
-          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV.",
+          "schedule_calendar": "Události Local Calendar / Google Calendar řídí objednávky všech zařízení. Příklady: Bojler: 55°C, EcoVolter: 80% (konec = termín); Bojler: max 45°C (po dobu události); EcoVolter: away (start = odjezd / příprava předtím, konec = návrat). Ruční objednávka má přednost."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -401,7 +405,7 @@
             "deadline_temperature": "Teplota v termínu",
             "tank_volume_l": "Objem nádrže",
             "deadline_hysteresis": "Hystereze termínu",
-            "deadline_safety_factor": "Rezerva doby ohřevu",
+            "deadline_safety_factor": "Koeficient doby ohřevu",
             "max_temperature_hysteresis": "Hystereze maximální teploty",
             "deadline_hdo_only": "Dohřívat do termínu jen v HDO",
             "deadline_earliest": "Dohřev ze sítě nejdříve od",
@@ -419,7 +423,7 @@
             "deadline_enabled": "Když voda do daného času nedosáhne teploty, bojler se dohřeje i bez přebytků (v HDO nebo těsně před termínem). Vyžaduje senzor teploty.",
             "tank_volume_l": "Pro výpočet, kdy začít ohřívat.",
             "deadline_hysteresis": "Ohřev do termínu začne jen když je voda aspoň o tolik chladnější než cílová teplota.",
-            "deadline_safety_factor": "1,2 = začne o 20 % dřív, než vychází výpočet.",
+            "deadline_safety_factor": "Násobí vypočtenou dobu ohřevu. 1,0 = teorie (1,163 Wh/l·K). Nad 1 = rezerva (začne dřív / chce víc NT). Pod 1 = ohřev je v praxi rychlejší (kalibrace, když často „nestíhá“ těsně v NT).",
             "max_temperature_hysteresis": "Po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu.",
             "deadline_hdo_only": "Zapnuto: co nedodá slunce podle predikce, se dohřeje ze sítě jen v nízkém tarifu – v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
             "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
@@ -450,7 +454,7 @@
             "deadline_temperature": "Teplota v termínu",
             "tank_volume_l": "Objem nádrže",
             "deadline_hysteresis": "Hystereze termínu",
-            "deadline_safety_factor": "Rezerva doby ohřevu",
+            "deadline_safety_factor": "Koeficient doby ohřevu",
             "max_temperature_hysteresis": "Hystereze maximální teploty",
             "deadline_hdo_only": "Dohřívat do termínu jen v HDO",
             "deadline_earliest": "Dohřev ze sítě nejdříve od",
@@ -468,7 +472,7 @@
             "deadline_enabled": "Když voda do daného času nedosáhne teploty, bojler se dohřeje i bez přebytků (v HDO nebo těsně před termínem). Vyžaduje senzor teploty.",
             "tank_volume_l": "Pro výpočet, kdy začít ohřívat.",
             "deadline_hysteresis": "Ohřev do termínu začne jen když je voda aspoň o tolik chladnější než cílová teplota.",
-            "deadline_safety_factor": "1,2 = začne o 20 % dřív, než vychází výpočet.",
+            "deadline_safety_factor": "Násobí vypočtenou dobu ohřevu. 1,0 = teorie (1,163 Wh/l·K). Nad 1 = rezerva (začne dřív / chce víc NT). Pod 1 = ohřev je v praxi rychlejší (kalibrace, když často „nestíhá“ těsně v NT).",
             "max_temperature_hysteresis": "Po dosažení maxima se z přebytků znovu zapne až po poklesu o tuto hodnotu.",
             "deadline_hdo_only": "Zapnuto: co nedodá slunce podle predikce, se dohřeje ze sítě jen v nízkém tarifu – v nejpozdějších oknech HDO před termínem. Vypnuto: těsně před termínem kdykoli.",
             "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
@@ -874,7 +878,7 @@
         "name": "Hystereze termínu"
       },
       "device_deadline_safety_factor": {
-        "name": "Rezerva doby ohřevu"
+        "name": "Koeficient doby ohřevu"
       },
       "device_max_temperature_hysteresis": {
         "name": "Hystereze maximální teploty"

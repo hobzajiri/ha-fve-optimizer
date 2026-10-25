@@ -119,6 +119,33 @@ async def test_ev_order_holds_above_80_until_deadline(hass: HomeAssistant, freez
     assert ("turn_on", "switch.ev_charge", None) in rec.calls
 
 
+async def test_ev_charge_order_hdo_catch_up_past_deadline(hass: HomeAssistant, freezer) -> None:
+    """HDO-only charge order still runs after the deadline until the SoC is met."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    # Past the order deadline; currently inside a low-tariff window.
+    freezer.move_to(datetime(2026, 10, 1, 21, 0, tzinfo=PRAGUE))
+    _ev_states(hass, "50")
+    entry = _entry(
+        {"hdo_source": "manual", "hdo_manual_workday": "20:00-23:00"},
+        ("ev_charger", _ev(ev_deadline_hdo_only=True, ev_capacity_kwh=10.0, ev_deadline_enabled=False)),
+    )
+    coordinator = await _setup(hass, entry)
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_ev_charge_order",
+        {"target_soc": 90, "deadline": "2026-10-01 18:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["urgent"] is True
+    assert data["deadline_source"] == "order"
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+
+
 async def test_ev_boost_charges_now_with_eta(hass: HomeAssistant, freezer) -> None:
     """Fast charge ignores surplus/HDO and reports an ETA at max power."""
     await hass.config.async_set_time_zone("Europe/Prague")
@@ -408,6 +435,87 @@ async def test_ev_daily_goal_not_mixed_with_later_order(hass: HomeAssistant, fre
     assert data["deadline_soc"] == 100
     assert data.get("deadline_phase") == "top_up"
     assert data.get("urgent") is not True
+
+
+async def test_boiler_heat_order_catch_up_past_deadline(hass: HomeAssistant, freezer) -> None:
+    """One-shot heat order stays urgent after the deadline until the target is met."""
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 19, 0, tzinfo=PRAGUE))
+    _states(hass, grid=0, batt=0, soc=90)
+    hass.states.async_set("switch.boiler", "off")
+    hass.states.async_set("sensor.water", "40")
+    boiler = {
+        **BOILER,
+        "temperature_sensor": "sensor.water",
+        "deadline_enabled": False,
+        "tank_volume_l": 160,
+        "nominal_power_w": 2000,
+        "deadline_safety": 1.0,
+    }
+    coordinator = await _setup(hass, _entry({}, ("switched", boiler)))
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_heat_order",
+        {"target_temp": 55, "deadline": "2026-10-01 18:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["urgent"] is True
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+
+
+async def test_boiler_heat_order_urgent(hass: HomeAssistant, freezer) -> None:
+    """One-shot heat order heats to target °C by deadline without daily deadline."""
+    from homeassistant.core import Event
+
+    from custom_components.fve_optimizer.notify import EVENT_CHARGE_ORDER
+
+    events: list[Event] = []
+    hass.bus.async_listen(f"{DOMAIN}_{EVENT_CHARGE_ORDER}", events.append)
+    await hass.config.async_set_time_zone("Europe/Prague")
+    rec = Recorder(hass)
+    freezer.move_to(datetime(2026, 10, 1, 16, 0, tzinfo=PRAGUE))
+    _states(hass, grid=0, batt=0, soc=90)
+    hass.states.async_set("switch.boiler", "off")
+    hass.states.async_set("sensor.water", "40")
+    boiler = {
+        **BOILER,
+        "temperature_sensor": "sensor.water",
+        "deadline_enabled": False,
+        "tank_volume_l": 160,
+        "nominal_power_w": 2000,
+        "deadline_safety": 1.0,
+    }
+    coordinator = await _setup(hass, _entry({}, ("switched", boiler)))
+    device_id = next(iter(coordinator.devices))
+    await hass.services.async_call(
+        "fve_optimizer",
+        "set_heat_order",
+        {"target_temp": 55, "deadline": "2026-10-01 18:00:00", "device_id": device_id},
+        blocking=True,
+    )
+    assert coordinator.devices[device_id].heat_order["temp"] == 55.0
+    # ~2.8 kWh need → ~1.4 h at 2 kW → start before 18:00; at 16:40 should be urgent.
+    freezer.move_to(datetime(2026, 10, 1, 16, 45, tzinfo=PRAGUE))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    data = coordinator.data.devices[device_id]
+    assert data["urgent"] is True
+    assert data["heat_order"]["temp"] == 55.0
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+
+    hass.states.async_set("sensor.water", "55.5")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert coordinator.devices[device_id].heat_order is None
+    completed = [e for e in events if e.data.get("action") == "completed"]
+    assert len(completed) == 1
+    assert completed[0].data["temp"] == 55.0
+    assert completed[0].data["device_id"] == device_id
 
 
 async def test_ev_boost_clears_charge_order(hass: HomeAssistant, freezer) -> None:
@@ -1082,6 +1190,93 @@ def test_egd_2359_merges_over_midnight() -> None:
     )
     assert len(windows) == 1
     assert windows[0][0].hour == 21 and windows[0][1].hour == 9
+
+
+async def test_ev_outranks_boiler_thermal_dump(hass: HomeAssistant) -> None:
+    """Surplus EV charging beats boiler heating above deadline, even with worse priority."""
+    rec = Recorder(hass)
+    boiler = {
+        **BOILER,
+        "priority": 1,
+        "temperature_sensor": "sensor.water",
+        "max_temperature": 74.0,
+        "deadline_enabled": True,
+        "deadline_time": "19:00:00",
+        "deadline_temperature": 50.0,
+        "tank_volume_l": 160.0,
+        "on_delay_s": 0,
+        "off_delay_s": 0,
+    }
+    ev = {
+        **EV,
+        "priority": 2,
+        "ev_soc_sensor": "sensor.car_soc",
+        "ev_target_soc": 100.0,
+        "on_delay_s": 0,
+        "off_delay_s": 0,
+    }
+    # Deadline already met (55 ≥ 50); dump would go toward 74. Budget fits one device.
+    _states(
+        hass,
+        grid=-4500,
+        batt=0,
+        soc=95,
+        limit="10000",
+        switch__boiler="off",
+        sensor__water="55",
+        switch__ev_charge="off",
+        input_number__ev_current="6",
+        switch__ev_3f="on",
+        binary_sensor__ev_connected="on",
+        sensor__car_soc="40",
+    )
+    coordinator = await _setup(
+        hass, _entry({"night_target": False}, ("switched", boiler), ("ev_charger", ev))
+    )
+    assert ("turn_on", "switch.ev_charge", None) in rec.calls
+    assert ("turn_on", "switch.boiler", None) not in rec.calls
+
+    # EV done / unplugged → boiler may take the thermal dump.
+    rec.calls.clear()
+    hass.states.async_set("binary_sensor.ev_connected", "off")
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert ("turn_on", "switch.boiler", None) in rec.calls
+
+
+async def test_ev_on_delay_precounts_while_unplugged(hass: HomeAssistant) -> None:
+    """Surplus already stable before plug-in → start without waiting another on_delay."""
+    from custom_components.fve_optimizer.devices import EvChargerDevice, Headroom
+
+    hass.states.async_set("switch.ev_charge", "off")
+    hass.states.async_set("input_number.ev_current", "6")
+    hass.states.async_set("switch.ev_3f", "on")
+    hass.states.async_set("binary_sensor.ev_connected", "off")
+    hass.states.async_set("sensor.car_soc", "40")
+    device = EvChargerDevice(
+        hass,
+        "ev1",
+        {**EV, "on_delay_s": 60, "ev_soc_sensor": "sensor.car_soc", "ev_target_soc": 100.0},
+    )
+    device.voltage = 230.0
+    device.read()
+    headroom = Headroom()
+    budget = 5000.0
+
+    device.plan(budget, headroom, now=1000.0)
+    assert device.status.reason == "not_connected"
+    assert device._on_debounce._since == 1000.0
+
+    # Still unplugged – delay keeps counting.
+    device.plan(budget, headroom, now=1060.0)
+    assert device._on_debounce.check(True, 1060.0, 60)
+
+    hass.states.async_set("binary_sensor.ev_connected", "on")
+    device.read()
+    allocated = device.plan(budget, headroom, now=1060.0)
+    assert device.status.active
+    assert allocated > 0
+    assert device.status.reason == "starting"
 
 
 async def test_device_energy_and_cost_statistics(hass: HomeAssistant, freezer) -> None:

@@ -76,6 +76,15 @@ def test_plan_prefers_latest_windows() -> None:
     assert ok and [f"{a:%H:%M}-{b:%H:%M}" for a, b in plan] == ["14:20-15:00", "15:40-19:00"]
     plan, ok = hdo.plan_windows(windows, now, timedelta(hours=9))
     assert not ok
+    # 1.01 h in a 1 h slot: fail without slack, pass with a 2-minute forgive.
+    slot = [w("17:00", "18:00")]
+    now_eve = datetime(2026, 9, 30, 16, 0, tzinfo=PRAGUE)
+    _, ok = hdo.plan_windows(slot, now_eve, timedelta(hours=1.01))
+    assert not ok
+    _, ok = hdo.plan_windows(
+        slot, now_eve, timedelta(hours=1.01), slack=timedelta(minutes=2)
+    )
+    assert ok
 
 
 async def test_egd_config_flow(hass: HomeAssistant, aioclient_mock) -> None:

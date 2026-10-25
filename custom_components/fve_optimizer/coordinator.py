@@ -76,6 +76,7 @@ from .const import (
     CONF_PRICE_VT,
     CONF_PV_POWER,
     CONF_RESERVE_W,
+    CONF_SCHEDULE_CALENDAR,
     CONF_UPDATE_INTERVAL,
     DEFAULTS,
     DEVICE_TUNABLES,
@@ -83,6 +84,7 @@ from .const import (
     HUB_TUNABLE_KEYS,
 )
 from .hdo import HdoSchedule, settings_from_conf
+from .schedule import apply_schedule, async_fetch_events, parse_events
 from .notify import (
     EVENT_AWAY,
     EVENT_BOOST,
@@ -146,6 +148,10 @@ class DispatchSnapshot:
     headroom_a: float | None = None
     forecast_remaining_kwh: float | None = None
     forecast_need_kwh: float | None = None
+    # Need breakdown before the UI bar (battery to target + house to sunset + safety).
+    forecast_battery_kwh: float | None = None
+    forecast_house_kwh: float | None = None
+    forecast_margin_kwh: float | None = None
     hours_until_sunset: float | None = None
     night_hours: float | None = None
     night_kwh: float | None = None
@@ -655,9 +661,24 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         battery_need = self._f(CONF_BATTERY_CAPACITY_KWH) * max(target - soc, 0.0) / 100
         house_kw = (house_w if house_w is not None else self._f(CONF_HOUSE_AVG_POWER_W)) / 1000
         hours = self._hours_until_sunset()
-        need = (battery_need + house_kw * hours) * self._f(CONF_FORECAST_SAFETY)
+        house_need = house_kw * hours
+        base = battery_need + house_need
+        safety = self._f(CONF_FORECAST_SAFETY)
+        need = base * safety
         snap.forecast_remaining_kwh = remaining_kwh
+        snap.forecast_battery_kwh = round(battery_need, 2)
+        snap.forecast_house_kwh = round(house_need, 2)
         snap.forecast_need_kwh = round(need, 2)
+        # Derive margin from rounded parts so the UI bar segments always sum to need.
+        snap.forecast_margin_kwh = round(
+            max(
+                snap.forecast_need_kwh
+                - snap.forecast_battery_kwh
+                - snap.forecast_house_kwh,
+                0.0,
+            ),
+            2,
+        )
         snap.hours_until_sunset = round(hours, 2)
         covered = remaining_kwh >= need
         if covered:
@@ -670,6 +691,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         now = time.monotonic()
 
         await self.hdo.async_refresh()
+        await self._async_sync_schedule_calendar()
         hdo = self.hdo.is_active(dt_util.now())
         snap.hdo_active = hdo
         for device in self.devices.values():
@@ -800,11 +822,18 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         return self._finish(snap)
 
     def _dispatch_key(self, device: ManagedDevice) -> tuple:
-        """Sort key: urgent → away EV (refillable) → priority number."""
+        """Sort key: urgent → away EV → surplus EV → thermal dump last → priority."""
         from .devices import EvChargerDevice  # noqa: PLC0415
 
         away_first = isinstance(device, EvChargerDevice) and device.away_releases_battery()
-        return (not device.status.urgent, not away_first, device.priority)
+        # Prefer EV surplus charging over boiler heating above the deadline (dump to max °C).
+        return (
+            not device.status.urgent,
+            not away_first,
+            not device.wants_surplus_charge,
+            device.surplus_thermal_dump,
+            device.priority,
+        )
 
     def _finish(self, snap: DispatchSnapshot) -> DispatchSnapshot:
         snap.export_limit_raised = bool(self._export_raised)
@@ -883,7 +912,10 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     **order,
                 },
             )
-            detail = f"{order.get('soc')} %"
+            if order.get("temp") is not None:
+                detail = f"{order.get('temp')} °C"
+            else:
+                detail = f"{order.get('soc')} %"
             title, message = msg_order(
                 self.hass, device.name, False, detail, completed=True
             )
@@ -1128,6 +1160,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "forecast_kwh": snap.forecast_remaining_kwh,
             "forecast_need_kwh": snap.forecast_need_kwh,
             "forecast_covers": snap.forecast_covers_battery,
+            "forecast_parts": {
+                "battery_kwh": snap.forecast_battery_kwh,
+                "house_kwh": snap.forecast_house_kwh,
+                "margin_kwh": snap.forecast_margin_kwh,
+                "hours_until_sunset": snap.hours_until_sunset,
+            },
             "outlook": self._outlook(snap),
             "export_raised": bool(self._export_raised),
             "export_limit_now": state_float(self.hass, self.conf.get(CONF_EXPORT_LIMIT_ENTITY)),
@@ -1194,6 +1232,9 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "deadline_phase": d.status.extra.get("deadline_phase"),
                     "deadline_chase_soc": d.status.extra.get("deadline_chase_soc"),
                     "charge_order": d.status.extra.get("charge_order"),
+                    "heat_order": d.status.extra.get("heat_order"),
+                    "supports_order": d.status.extra.get("supports_order"),
+                    "max_temperature": d.status.extra.get("max_temperature"),
                     "boost": d.status.extra.get("boost"),
                     "away": d.status.extra.get("away"),
                     "battery_lend_kwh": d.status.extra.get("battery_lend_kwh"),
@@ -1849,6 +1890,19 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             await self.async_request_refresh()
         return done
 
+    async def _async_sync_schedule_calendar(self) -> None:
+        """Pull optional hub calendar events into device orders / away / max caps."""
+        entity_id = self.conf.get(CONF_SCHEDULE_CALENDAR)
+        if not entity_id:
+            return
+        now = dt_util.now()
+        raw = await async_fetch_events(self.hass, str(entity_id), now)
+        if raw is None:
+            # Keep last calendar-derived state across transient calendar outages.
+            return
+        if apply_schedule(self.devices, parse_events(raw, now), now):
+            self._save_state()
+
     def _ev_by_id_or_name(self, device_id: str | None = None, name: str | None = None):
         """Resolve an EV charger by subentry id or name."""
         from .devices import EvChargerDevice  # noqa: PLC0415
@@ -1868,6 +1922,138 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         if not evs:
             raise ValueError("No EV charger configured")
         raise ValueError("Several EV chargers – pass device_id or name")
+
+    def _switched_by_id_or_name(self, device_id: str | None = None, name: str | None = None):
+        """Resolve a switched (boiler) device by subentry id or name."""
+        from .devices import SwitchedDevice  # noqa: PLC0415
+
+        if device_id and (device := self.devices.get(device_id)):
+            if isinstance(device, SwitchedDevice):
+                return device
+            raise ValueError(f"{device_id} is not a switched device")
+        if name:
+            for device in self.devices.values():
+                if isinstance(device, SwitchedDevice) and device.name == name:
+                    return device
+            raise ValueError(f"No switched device named {name!r}")
+        boilers = [d for d in self.devices.values() if isinstance(d, SwitchedDevice)]
+        if len(boilers) == 1:
+            return boilers[0]
+        if not boilers:
+            raise ValueError("No switched device configured")
+        raise ValueError("Several switched devices – pass device_id or name")
+
+    async def async_set_heat_order(
+        self,
+        target_temp: float,
+        deadline: datetime,
+        device_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """One-shot heat order: reach target_temp by deadline."""
+        device = self._switched_by_id_or_name(device_id, name)
+        if not device.config.get("temperature_sensor"):
+            raise ValueError(f"{device.name} has no temperature sensor")
+        order = device.set_heat_order(target_temp, deadline)
+        self._save_state()
+        await self.async_request_refresh()
+        _LOGGER.info(
+            "%s: heat order %s °C by %s",
+            device.name,
+            order["temp"],
+            order["deadline"],
+        )
+        fire_event(
+            self.hass,
+            self,
+            EVENT_CHARGE_ORDER,
+            {"device_id": device.subentry_id, "device": device.name, "action": "set", **order},
+        )
+        title, message = msg_order(
+            self.hass,
+            device.name,
+            True,
+            f"{order['temp']} °C · {order['deadline']}",
+        )
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"order_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_ORDER)),
+        )
+        return {"device": device.name, "id": device.subentry_id, **order}
+
+    async def async_clear_heat_order(
+        self, device_id: str | None = None, name: str | None = None
+    ) -> dict[str, Any]:
+        """Cancel an active boiler heat order."""
+        device = self._switched_by_id_or_name(device_id, name)
+        device.clear_heat_order()
+        self._save_state()
+        await self.async_request_refresh()
+        fire_event(
+            self.hass,
+            self,
+            EVENT_CHARGE_ORDER,
+            {"device_id": device.subentry_id, "device": device.name, "action": "cleared"},
+        )
+        title, message = msg_order(self.hass, device.name, False)
+        await async_notify(
+            self.hass,
+            self,
+            title=title,
+            message=message,
+            notification_id=f"order_{device.subentry_id}",
+            enabled=bool(self.conf.get(CONF_NOTIFY_ON_ORDER)),
+        )
+        await async_dismiss(self.hass, self, f"order_{device.subentry_id}")
+        return {"device": device.name, "id": device.subentry_id, "cleared": True}
+
+    async def async_set_device_order(
+        self,
+        deadline: datetime,
+        target_soc: float | None = None,
+        target_temp: float | None = None,
+        device_id: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Route a one-shot order to EV (SoC) or boiler (temperature)."""
+        from .devices import EvChargerDevice, SwitchedDevice  # noqa: PLC0415
+
+        device = None
+        if device_id and (candidate := self.devices.get(device_id)):
+            device = candidate
+        elif name:
+            for candidate in self.devices.values():
+                if candidate.name == name:
+                    device = candidate
+                    break
+        if device is None:
+            if target_temp is not None and target_soc is None:
+                return await self.async_set_heat_order(
+                    target_temp, deadline, device_id=device_id, name=name
+                )
+            return await self.async_set_ev_charge_order(
+                target_soc if target_soc is not None else 80.0,
+                deadline,
+                device_id=device_id,
+                name=name,
+            )
+        if isinstance(device, EvChargerDevice):
+            if target_soc is None:
+                raise ValueError("target_soc required for EV charger")
+            return await self.async_set_ev_charge_order(
+                target_soc, deadline, device_id=device.subentry_id
+            )
+        if isinstance(device, SwitchedDevice):
+            if target_temp is None:
+                raise ValueError("target_temp required for switched device")
+            return await self.async_set_heat_order(
+                target_temp, deadline, device_id=device.subentry_id
+            )
+        raise ValueError("Device does not support orders")
 
     async def async_set_ev_charge_order(
         self,

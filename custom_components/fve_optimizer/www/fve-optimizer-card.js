@@ -73,7 +73,12 @@ const T = {
     good: "Co fungovalo", problems: "Problémy", suggestions: "Návrhy úprav", watchOnlyDay: "den v režimu Jen sledovat",
     proposalApply: "Použít", proposalDismiss: "Zamítnout",
     proposalApplied: "použito", proposalDismissed: "zamítnuto", proposalInvalid: "neplatné",
+    proposalHeld: "držení (ustálení)",
     proposalFromTo: "z", proposalTo: "na",
+    calibration: "Kalibrace konstant",
+    calibrationEmpty: "Zatím málo dní v deníku – návrhy až po shodě více dnů.",
+    calibrationEvidence: "důkaz",
+
     statsHint: "Spotřeba dnes, náklady za energii ze sítě (NT/VT) a podíl ze slunce",
     statusTitle: "Stav",
     outlook: "Předpoklad dne", outlookHint: "Co Optimizer očekává do konce dne z predikce, termínů a HDO – ne AI odhad.",
@@ -89,6 +94,12 @@ const T = {
     orderTemp: "Cíl °C", orderDate: "Datum", orderTime: "Čas",
     orderError: "Nepodařilo se uložit – zkus to znovu",
     holdHintBoiler: "Nahřeje bojler na cílovou teplotu do zvoleného termínu (přebytky, jinak NT / těsně před termínem).",
+    legionella: "legionela",
+    legionellaNever: "ještě neproběhla",
+    legionellaLast: "naposledy",
+    legionellaNext: "další",
+    legionellaDueNow: "splatné teď",
+    legionellaDueSince: "splatné od",
   },
   en: {
     pv: "PV", grid: "Grid", battery: "Battery", house: "House",
@@ -154,7 +165,12 @@ const T = {
     good: "What worked", problems: "Problems", suggestions: "Suggested changes", watchOnlyDay: "watch-only day",
     proposalApply: "Apply", proposalDismiss: "Dismiss",
     proposalApplied: "applied", proposalDismissed: "dismissed", proposalInvalid: "invalid",
+    proposalHeld: "held (settling)",
     proposalFromTo: "from", proposalTo: "to",
+    calibration: "Constant calibration",
+    calibrationEmpty: "Not enough diary days yet – proposals need multi-day agreement.",
+    calibrationEvidence: "evidence",
+
     statsHint: "Consumption today, cost of grid energy (NT/VT) and solar share",
     statusTitle: "Status",
     outlook: "Today’s outlook", outlookHint: "What the Optimizer expects for the rest of the day from forecast, deadlines and HDO – not an AI guess.",
@@ -170,6 +186,12 @@ const T = {
     orderTemp: "Target °C", orderDate: "Date", orderTime: "Time",
     orderError: "Could not save – try again",
     holdHintBoiler: "Heats the boiler to the target temperature by the chosen deadline (surplus, otherwise off-peak / just in time).",
+    legionella: "legionella",
+    legionellaNever: "not run yet",
+    legionellaLast: "last",
+    legionellaNext: "next",
+    legionellaDueNow: "due now",
+    legionellaDueSince: "due since",
   },
 };
 
@@ -265,15 +287,86 @@ class FveOptimizerCard extends HTMLElement {
     let key = "none";
     try { key = data ? JSON.stringify(data) : "none"; } catch { key = `err-${Date.now()}`; }
     if (key === this._last) return;
-    this._last = key;
     const lang = hass.locale?.language || hass.language || "en";
-    this._render(data, String(lang).startsWith("cs") ? T.cs : T.en);
+    const t = String(lang).startsWith("cs") ? T.cs : T.en;
+    // Don't wipe the order modal / AI ask box while the user is typing.
+    if (this._isEditing()) {
+      this._deferred = { key, data, t };
+      return;
+    }
+    this._last = key;
+    this._deferred = null;
+    this._render(data, t);
+  }
+
+  /** True while order modal is open or AI ask / modal field has focus. */
+  _isEditing() {
+    if (this._evModalId) return true;
+    if (this._askFocused) return true;
+    const root = this.shadowRoot;
+    const active = root?.activeElement;
+    if (!active) return false;
+    if (active.matches?.("input.rv-q")) return true;
+    if (active.closest?.(".modal:not([hidden])")) return true;
+    return false;
+  }
+
+  _captureAskDraft() {
+    const root = this.shadowRoot;
+    const askEl = root?.querySelector?.("input.rv-q");
+    if (!askEl || this._askDraft?.sent) return;
+    const focused = root.activeElement === askEl || this._askFocused;
+    if (focused || askEl.value) {
+      this._askDraft = {
+        value: askEl.value,
+        start: askEl.selectionStart,
+        end: askEl.selectionEnd,
+        focus: focused,
+      };
+    }
+  }
+
+  _captureModalDraft() {
+    if (!this._evModalId) return;
+    const root = this.shadowRoot;
+    const active = root?.activeElement;
+    const field = active?.closest?.(".modal") && active.matches?.("input")
+      ? (active.className || "").split(/\s+/).find((c) => c.startsWith("ord-") || c.startsWith("away-"))
+      : this._evModalDraft?.focusField;
+    this._evModalDraft = {
+      id: this._evModalId,
+      soc: root.querySelector?.(".ord-soc")?.value,
+      temp: root.querySelector?.(".ord-temp")?.value,
+      whenDate: root.querySelector?.(".ord-when-date")?.value,
+      whenTime: root.querySelector?.(".ord-when-time")?.value,
+      leaveDate: root.querySelector?.(".away-leave-date")?.value,
+      leaveTime: root.querySelector?.(".away-leave-time")?.value,
+      retDate: root.querySelector?.(".away-return-date")?.value,
+      retTime: root.querySelector?.(".away-return-time")?.value,
+      focusField: field || null,
+    };
+  }
+
+  _flushDeferred(force = false) {
+    if (this._askBlurTimer) {
+      clearTimeout(this._askBlurTimer);
+      this._askBlurTimer = null;
+    }
+    if (!force && this._isEditing()) return;
+    const pending = this._deferred;
+    if (!pending) return;
+    this._deferred = null;
+    if (pending.key === this._last) return;
+    this._last = pending.key;
+    this._render(pending.data, pending.t);
   }
 
   _render(d, t) {
     const root = this.shadowRoot;
     if (!root) return;
     try {
+      this._captureAskDraft();
+      this._captureModalDraft();
       this._renderInner(d, t || T.en);
     } catch (err) {
       console.error("fve-optimizer-card", err);
@@ -284,42 +377,6 @@ class FveOptimizerCard extends HTMLElement {
 
   _renderInner(d, t) {
     const root = this.shadowRoot;
-    // Preserve AI ask draft + focus across coordinator re-renders.
-    const askEl = root.querySelector?.("input.rv-q");
-    if (askEl && document.activeElement === askEl) {
-      this._askDraft = {
-        value: askEl.value,
-        start: askEl.selectionStart,
-        end: askEl.selectionEnd,
-        focus: true,
-      };
-    } else if (askEl && askEl.value && !this._askDraft?.sent) {
-      this._askDraft = { ...(this._askDraft || {}), value: askEl.value, focus: false };
-    }
-    // Preserve in-progress modal edits across coordinator re-renders.
-    if (this._evModalId) {
-      const soc = root.querySelector?.(".ord-soc")?.value;
-      const temp = root.querySelector?.(".ord-temp")?.value;
-      const whenDate = root.querySelector?.(".ord-when-date")?.value;
-      const whenTime = root.querySelector?.(".ord-when-time")?.value;
-      const leaveDate = root.querySelector?.(".away-leave-date")?.value;
-      const leaveTime = root.querySelector?.(".away-leave-time")?.value;
-      const retDate = root.querySelector?.(".away-return-date")?.value;
-      const retTime = root.querySelector?.(".away-return-time")?.value;
-      if (soc != null || temp != null || whenDate != null || leaveDate != null) {
-        this._evModalDraft = {
-          id: this._evModalId,
-          soc,
-          temp,
-          whenDate,
-          whenTime,
-          leaveDate,
-          leaveTime,
-          retDate,
-          retTime,
-        };
-      }
-    }
     if (!d || !Array.isArray(d.devices)) {
       root.innerHTML = `<ha-card><div class="empty">${t.noData}</div></ha-card>${STYLE}`;
       return;
@@ -409,11 +466,20 @@ class FveOptimizerCard extends HTMLElement {
     let tf;
     try { tf = new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit" }); }
     catch { tf = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }); }
+    let df;
+    try { df = new Intl.DateTimeFormat(lang, { day: "numeric", month: "numeric" }); }
+    catch { df = new Intl.DateTimeFormat(undefined, { day: "numeric", month: "numeric" }); }
     const hhmm = (iso) => {
       if (!iso) return "";
       const dt = new Date(iso);
       if (Number.isNaN(dt.getTime())) return "";
       try { return tf.format(dt); } catch { return ""; }
+    };
+    const dayMonth = (iso) => {
+      if (!iso) return "";
+      const dt = new Date(iso);
+      if (Number.isNaN(dt.getTime())) return "";
+      try { return df.format(dt); } catch { return ""; }
     };
 
     // --- Context tiles: forecast, tariff, price --------------------------------
@@ -790,6 +856,21 @@ class FveOptimizerCard extends HTMLElement {
       }
       if (Array.isArray(x.plan) && x.plan.length) det.push(`${t.plan} ${x.plan.join(", ")}`);
       else if (typeof x.plan === "string" && x.plan) det.push(`${t.plan} ${x.plan}`);
+      if (x.legionella_due != null || x.legionella_last != null || x.legionella_next != null) {
+        const bits = [t.legionella];
+        if (x.legionella_last) bits.push(`${t.legionellaLast} ${dayMonth(x.legionella_last)}`);
+        else bits.push(t.legionellaNever);
+        if (x.legionella_due) {
+          bits.push(
+            x.legionella_next
+              ? `${t.legionellaDueSince} ${dayMonth(x.legionella_next)}`
+              : t.legionellaDueNow
+          );
+        } else if (x.legionella_next) {
+          bits.push(`${t.legionellaNext} ${dayMonth(x.legionella_next)}`);
+        }
+        det.push(bits.join(" · "));
+      }
       const td = x.today || {};
       if (td.total > 0.005) {
         det.push(`${t.today} ${num(td.total, 1)} kWh · ☀ ${Math.round((100 * (td.solar || 0)) / td.total)} %`);
@@ -813,6 +894,7 @@ class FveOptimizerCard extends HTMLElement {
         x.urgent ? `<span class="tag urg" title="${esc(t.urgentHint)}">⚡ ${t.urgent}</span>` : "",
         x.min_first ? `<span class="tag min" title="${esc(t.minFirstHint)}">⬆ ${t.minFirst}</span>` : "",
         x.at_risk ? `<span class="tag urg" title="${esc(t.atRiskHint)}">⚠ ${t.atRisk}</span>` : "",
+        x.legionella_due ? `<span class="tag urg" title="${esc(t.legionella)}">${t.legionella}</span>` : "",
       ].join("");
       const rec = recById[x.id];
       const power = fmtW(x.actual_w);
@@ -984,30 +1066,50 @@ class FveOptimizerCard extends HTMLElement {
           ${list(t.good, rv.good, "good")}${list(t.problems, rv.problems, "bad")}
           ${(() => {
             const props = Array.isArray(rv.proposals) ? rv.proposals : [];
-            if (!props.length) return list(t.suggestions, rv.suggestions, "sugg");
+            const cal = rv.calibration || d.calibration || {};
+            const calRecent = Array.isArray(cal.recent) ? cal.recent : [];
+            const calBlock = `<div class="rv-sec cal"><div class="rv-h">${t.calibration}</div>${
+              calRecent.length
+                ? `<div class="rv-cal-meta">${esc(String(cal.days_recorded || 0))} dní · shoda ≥${esc(String(cal.evidence_need || 3))} · cooldown ${esc(String(cal.cooldown_days || 5))} d</div>
+                   <div class="rv-cal-days">${calRecent.map((x) => {
+                     const bits = [x.date];
+                     if (x.score != null) bits.push(`${x.score}/10`);
+                     if (x.short_cycles) bits.push(`hunt ${x.short_cycles}`);
+                     if (x.export_kwh) bits.push(`exp ${Number(x.export_kwh).toFixed(1)}`);
+                     if (x.at_risk) bits.push("risk");
+                     return `<span class="rv-cal-chip">${esc(bits.join(" · "))}</span>`;
+                   }).join("")}</div>`
+                : `<div class="none">${t.calibrationEmpty}</div>`
+            }</div>`;
+            if (!props.length) {
+              return `${calBlock}${list(t.suggestions, rv.suggestions, "sugg")}`;
+            }
             const fmtVal = (v) => (typeof v === "boolean" ? (v ? "on" : "off") : String(v));
             const statusLabel = (st) => (
               st === "applied" ? t.proposalApplied
                 : st === "dismissed" ? t.proposalDismissed
-                  : st === "invalid" ? t.proposalInvalid : ""
+                  : st === "held" ? t.proposalHeld
+                    : st === "invalid" ? t.proposalInvalid : ""
             );
             const rows = props.map((p) => {
               const st = p.status || "pending";
-              const head = `${esc(p.target)} – ${esc(p.key)}: ${t.proposalFromTo} ${esc(fmtVal(p.from))} ${t.proposalTo} ${esc(fmtVal(p.to))}`;
+              const src = p.source === "calibration" ? " [kalibrace]" : "";
+              const head = `${esc(p.target)} – ${esc(p.key)}: ${t.proposalFromTo} ${esc(fmtVal(p.from))} ${t.proposalTo} ${esc(fmtVal(p.to))}${src}`;
               const reason = p.reason ? ` – ${esc(p.reason)}` : "";
+              const evid = p.evidence ? ` <span class="rv-evid">(${t.calibrationEvidence}: ${esc(p.evidence)})</span>` : "";
               const err = p.error ? ` (${esc(p.error)})` : "";
               if (st === "pending") {
                 return `<li class="rv-prop">
-                  <div class="rv-prop-text">${head}${reason}</div>
+                  <div class="rv-prop-text">${head}${reason}${evid}</div>
                   <div class="rv-prop-actions">
                     <button class="btn prop-apply" data-id="${esc(p.id)}" ${chatBusy ? "disabled" : ""}>${t.proposalApply}</button>
                     <button class="btn prop-dismiss" data-id="${esc(p.id)}" ${chatBusy ? "disabled" : ""}>${t.proposalDismiss}</button>
                   </div>
                 </li>`;
               }
-              return `<li class="rv-prop done"><span class="rv-prop-text">${head}${reason}${err}</span><span class="rv-prop-st">${statusLabel(st)}</span></li>`;
+              return `<li class="rv-prop done"><span class="rv-prop-text">${head}${reason}${evid}${err}</span><span class="rv-prop-st">${statusLabel(st)}</span></li>`;
             }).join("");
-            return `<div class="rv-sec sugg"><div class="rv-h">${t.suggestions}</div><ul>${rows}</ul></div>`;
+            return `${calBlock}<div class="rv-sec sugg"><div class="rv-h">${t.suggestions}</div><ul>${rows}</ul></div>`;
           })()}
           ${list(t.aiOutlook, rv.outlook, "outlook")}
           ${chatHtml}` : ""}
@@ -1111,7 +1213,7 @@ class FveOptimizerCard extends HTMLElement {
     const askInput = root.querySelector("input.rv-q");
     if (askInput && this._askDraft?.value != null && !askInput.disabled) {
       askInput.value = this._askDraft.value;
-      if (this._askDraft.focus) {
+      if (this._askDraft.focus || this._askFocused) {
         askInput.focus();
         try {
           const s = this._askDraft.start ?? askInput.value.length;
@@ -1126,9 +1228,17 @@ class FveOptimizerCard extends HTMLElement {
       askBtn.disabled = true;
       askBtn.textContent = t.reviewAsking;
       if (askInput) askInput.disabled = true;
+      this._askFocused = false;
       this._askDraft = { value: "", sent: true };
       this._hass.callService("fve_optimizer", "ask_review", { question: q });
+      // Allow the next status update (review_asking / reply) through.
+      this._flushDeferred(true);
     };
+    askBtn?.addEventListener("mousedown", (ev) => {
+      // Keep draft across blur→click so a deferred re-render can't wipe the question.
+      ev.preventDefault();
+      this._askFocused = true;
+    });
     askBtn?.addEventListener("click", sendAsk);
     askInput?.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter") {
@@ -1136,13 +1246,32 @@ class FveOptimizerCard extends HTMLElement {
         sendAsk();
       }
     });
+    askInput?.addEventListener("focus", () => {
+      this._askFocused = true;
+      if (this._askBlurTimer) {
+        clearTimeout(this._askBlurTimer);
+        this._askBlurTimer = null;
+      }
+    });
+    askInput?.addEventListener("blur", () => {
+      this._askFocused = false;
+      this._captureAskDraft();
+      if (this._askDraft) this._askDraft.focus = false;
+      // Wait so click on Ask can run first; then apply any deferred live update.
+      if (this._askBlurTimer) clearTimeout(this._askBlurTimer);
+      this._askBlurTimer = setTimeout(() => {
+        this._askBlurTimer = null;
+        this._flushDeferred();
+      }, 120);
+    });
     askInput?.addEventListener("input", () => {
       this._askDraft = {
         value: askInput.value,
         start: askInput.selectionStart,
         end: askInput.selectionEnd,
-        focus: document.activeElement === askInput,
+        focus: true,
       };
+      this._askFocused = true;
     });
     root.querySelectorAll("button.btn[data-id]").forEach((b) =>
       b.addEventListener("click", (ev) => {
@@ -1267,14 +1396,27 @@ class FveOptimizerCard extends HTMLElement {
       fillEvForm(x, draft);
       showEvErr("");
       modal.hidden = false;
+      if (draft?.focusField) {
+        const el = actions.querySelector(`.${draft.focusField}`);
+        if (el) {
+          try { el.focus(); } catch { /* ignore */ }
+        }
+      }
     };
     const closeEvModal = () => {
       this._evModalId = null;
       this._evModalDraft = null;
       showEvErr("");
       if (modal) modal.hidden = true;
+      this._flushDeferred();
     };
     this._closeEvModal = closeEvModal;
+    actions?.querySelectorAll("input").forEach((inp) => {
+      const save = () => this._captureModalDraft();
+      inp.addEventListener("input", save);
+      inp.addEventListener("change", save);
+      inp.addEventListener("focus", save);
+    });
     const callEv = async (service, data) => {
       try {
         await this._hass.callService("fve_optimizer", service, data);
@@ -1541,6 +1683,14 @@ const STYLE = `<style>
   .rv-sec ul { margin: 2px 0 0; padding-left: 18px; }
   .rv-sec.sugg li { color: var(--info-color, #039be5); }
   .rv-sec.outlook li { color: var(--primary-text-color); }
+  .rv-sec.cal .rv-cal-meta { font-size: 11px; color: var(--secondary-text-color); margin: 2px 0 4px; }
+  .rv-sec.cal .rv-cal-days { display: flex; flex-wrap: wrap; gap: 4px; }
+  .rv-sec.cal .rv-cal-chip {
+    font-size: 11px; padding: 2px 6px;
+    background: var(--secondary-background-color, rgba(127,127,127,.15));
+    border-radius: 4px;
+  }
+  .rv-evid { font-size: 11px; color: var(--secondary-text-color); }
   .rv-prop { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 4px; }
   .rv-prop.done { opacity: 0.7; }
   .rv-prop-text { flex: 1 1 12em; }

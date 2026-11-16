@@ -213,7 +213,8 @@ async def test_day_outlook_includes_deadline_plan(hass: HomeAssistant, freezer) 
     }
     coordinator = await _setup(hass, _entry({"night_target": False}, ("switched", boiler)))
     outlook = coordinator.data.live_data["outlook"]
-    assert outlook["battery"]["priority"] is True
+    # Soft target 90 % no longer forces hard battery priority (SoC 40 % > reserve).
+    assert outlook["battery"]["priority"] is False
     device = outlook["devices"][0]
     assert device["name"] == "Bojler"
     assert device["mode"] == "deadline"

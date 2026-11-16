@@ -163,8 +163,8 @@ async def test_subentry_flow_adds_boiler(hass: HomeAssistant) -> None:
 
 async def test_battery_priority_holds_devices(hass: HomeAssistant) -> None:
     rec = Recorder(hass)
-    # 3 kW goes into the battery, SoC 40 % < 90 %, no forecast → battery first.
-    _states(hass, grid=0, batt=3000, soc=40, switch__boiler="off")
+    # Hard priority only below reserve SoC (default 10 %). SoC 5 % → battery first.
+    _states(hass, grid=0, batt=3000, soc=5, switch__boiler="off")
     coordinator = await _setup(hass, _entry(("switched", BOILER)))
     assert coordinator.data.battery_priority
     assert ("turn_on", "switch.boiler", None) not in rec.calls
@@ -400,21 +400,25 @@ def _entity_id(hass: HomeAssistant, domain: str, unique_suffix: str) -> str:
 
 async def test_hub_number_applies_without_reload(hass: HomeAssistant) -> None:
     Recorder(hass)
-    _states(hass, grid=0, batt=3000, soc=80, switch__boiler="off")
+    # Hard priority uses reserve SoC, not the soft night/target SoC.
+    _states(hass, grid=0, batt=3000, soc=30, switch__boiler="off")
     entry = _entry(("switched", BOILER))
     coordinator = await _setup(hass, entry)
-    assert coordinator.data.battery_priority
-
-    entity_id = _entity_id(hass, "number", "_battery_target_soc")
-    assert hass.states.get(entity_id).state == "90.0"
+    # Raise reserve above SoC → hard battery priority.
+    entity_id = _entity_id(hass, "number", "_battery_reserve_soc")
     await hass.services.async_call(
-        "number", "set_value", {"entity_id": entity_id, "value": 70}, blocking=True
+        "number", "set_value", {"entity_id": entity_id, "value": 40}, blocking=True
     )
     await hass.async_block_till_done()
-
     assert entry.runtime_data is coordinator  # no reload happened
-    assert entry.options["battery_target_soc"] == 70
-    assert hass.states.get(entity_id).state == "70.0"
+    assert entry.options["battery_reserve_soc"] == 40
+    assert coordinator.data.battery_priority
+
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": entity_id, "value": 10}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert entry.options["battery_reserve_soc"] == 10
     assert not coordinator.data.battery_priority
 
 
@@ -722,7 +726,8 @@ async def test_ev_starts_on_one_phase_when_three_is_too_much(hass: HomeAssistant
     )
     coordinator = await _setup(hass, _entry(("ev_charger", ev)))
     assert ("turn_off", "switch.ev_3f", None) in rec.calls
-    assert ("set_value", "input_number.ev_current", 14) in rec.calls  # floor(3400/230)
+    # Budget 3400 + half-amp borrow while exporting → floor(3515/230) = 15.
+    assert ("set_value", "input_number.ev_current", 15) in rec.calls
     assert ("turn_on", "switch.ev_charge", None) in rec.calls
     # The start does not consume the phase switch interval.
     device = next(iter(coordinator.devices.values()))

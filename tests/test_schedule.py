@@ -1,4 +1,4 @@
-"""Calendar schedule parsing and apply rules."""
+"""Calendar schedule parsing and apply rules (per-device calendars)."""
 
 from __future__ import annotations
 
@@ -6,23 +6,41 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from custom_components.fve_optimizer.devices import SwitchedDevice
-from custom_components.fve_optimizer.schedule import ParsedEvent, apply_schedule, parse_summary
+from custom_components.fve_optimizer.schedule import (
+    ParsedEvent,
+    apply_schedule,
+    apply_schedule_for_device,
+    parse_events,
+    parse_summary,
+)
 
 PRAGUE = ZoneInfo("Europe/Prague")
 
 
-def test_parse_summary_variants() -> None:
+def test_parse_summary_nameless() -> None:
+    start = datetime(2026, 10, 6, 10, 0, tzinfo=PRAGUE)
+    end = datetime(2026, 10, 6, 18, 0, tzinfo=PRAGUE)
+    heat = parse_summary("55°C", start, end)
+    assert heat and heat.kind == "order_temp" and heat.value == 55.0 and heat.name is None
+    soc = parse_summary("80%", start, end)
+    assert soc and soc.kind == "order_soc" and soc.value == 80.0
+    cap = parse_summary("max 45°C", start, end)
+    assert cap and cap.kind == "max_temp" and cap.value == 45.0
+    away = parse_summary("away", start, end)
+    assert away and away.kind == "away" and away.value is None
+    assert parse_summary("odjezd", start, end) is None
+    assert parse_summary("random note", start, end) is None
+
+
+def test_parse_summary_legacy_name_prefix() -> None:
     start = datetime(2026, 10, 6, 10, 0, tzinfo=PRAGUE)
     end = datetime(2026, 10, 6, 18, 0, tzinfo=PRAGUE)
     heat = parse_summary("Bojler: 55°C", start, end)
     assert heat and heat.kind == "order_temp" and heat.value == 55.0 and heat.name == "Bojler"
     soc = parse_summary("EcoVolter: 80%", start, end)
-    assert soc and soc.kind == "order_soc" and soc.value == 80.0
-    cap = parse_summary("Bojler: max 45°C", start, end)
-    assert cap and cap.kind == "max_temp" and cap.value == 45.0
+    assert soc and soc.kind == "order_soc" and soc.value == 80.0 and soc.name == "EcoVolter"
     away = parse_summary("EcoVolter: away", start, end)
-    assert away and away.kind == "away" and away.value is None
-    assert parse_summary("random note", start, end) is None
+    assert away and away.kind == "away" and away.name == "EcoVolter"
 
 
 def _boiler(name: str = "Bojler") -> SwitchedDevice:
@@ -46,10 +64,10 @@ def test_apply_schedule_manual_beats_calendar() -> None:
         "source": "manual",
     }
     events = [
-        ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end),
-        ParsedEvent("Bojler", "max_temp", 45.0, now - timedelta(hours=1), end),
+        ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end),
+        ParsedEvent("max_temp", 45.0, now - timedelta(hours=1), end),
     ]
-    changed = apply_schedule({"b1": boiler}, events, now)
+    changed = apply_schedule_for_device(boiler, events, now)
     assert boiler._heat_order["source"] == "manual"
     assert boiler._heat_order["temp"] == 60.0
     assert boiler._max_temp_override == 45.0
@@ -72,8 +90,8 @@ def test_apply_schedule_sets_calendar_heat_order() -> None:
     now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
     end = now + timedelta(hours=6)
     boiler = _boiler()
-    events = [ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end)]
-    assert apply_schedule({"b1": boiler}, events, now) is True
+    events = [ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end)]
+    assert apply_schedule_for_device(boiler, events, now) is True
     assert boiler._heat_order == {
         "temp": 55.0,
         "deadline": end.isoformat(),
@@ -86,18 +104,18 @@ def test_calendar_heat_order_not_reapplied_after_complete() -> None:
     now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
     end = now + timedelta(hours=6)
     boiler = _boiler()
-    events = [ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end)]
-    apply_schedule({"b1": boiler}, events, now)
+    events = [ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end)]
+    apply_schedule_for_device(boiler, events, now)
     assert boiler.complete_heat_order() is not None
     assert boiler._heat_order is None
     assert boiler._calendar_order_done is not None
 
-    assert apply_schedule({"b1": boiler}, events, now) is False
+    assert apply_schedule_for_device(boiler, events, now) is False
     assert boiler._heat_order is None
 
     # After the event ends, the satisfied marker clears so a later occurrence can apply.
     later = end + timedelta(minutes=1)
-    assert apply_schedule({"b1": boiler}, events, later) is True
+    assert apply_schedule_for_device(boiler, events, later) is True
     assert boiler._calendar_order_done is None
 
 
@@ -107,18 +125,18 @@ def test_manual_heat_complete_suppresses_active_calendar_event() -> None:
     end = now + timedelta(hours=6)
     boiler = _boiler()
     boiler._temperature = 56.0
-    events = [ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end)]
+    events = [ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end)]
     # Simulate: manual order just completed, no active order left.
     boiler._heat_order = None
     boiler._calendar_order_done = None
-    assert apply_schedule({"b1": boiler}, events, now) is True
+    assert apply_schedule_for_device(boiler, events, now) is True
     assert boiler._heat_order is None
     assert boiler._calendar_order_done == {
         "temp": 55.0,
         "deadline": end.isoformat(),
     }
     # Second sync stays quiet (no restart / no extra completed edge).
-    assert apply_schedule({"b1": boiler}, events, now) is False
+    assert apply_schedule_for_device(boiler, events, now) is False
 
 
 def test_unmet_calendar_heat_order_kept_after_event_end() -> None:
@@ -126,12 +144,12 @@ def test_unmet_calendar_heat_order_kept_after_event_end() -> None:
     now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
     end = now + timedelta(hours=6)
     boiler = _boiler()
-    events = [ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end)]
-    apply_schedule({"b1": boiler}, events, now)
+    events = [ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end)]
+    apply_schedule_for_device(boiler, events, now)
     assert boiler._heat_order is not None
 
     later = end + timedelta(minutes=1)
-    assert apply_schedule({"b1": boiler}, events, later) is False
+    assert apply_schedule_for_device(boiler, events, later) is False
     assert boiler._heat_order == {
         "temp": 55.0,
         "deadline": end.isoformat(),
@@ -144,12 +162,12 @@ def test_calendar_heat_order_not_reapplied_after_user_clear() -> None:
     now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
     end = now + timedelta(hours=6)
     boiler = _boiler()
-    events = [ParsedEvent("Bojler", "order_temp", 55.0, now - timedelta(hours=1), end)]
-    apply_schedule({"b1": boiler}, events, now)
+    events = [ParsedEvent("order_temp", 55.0, now - timedelta(hours=1), end)]
+    apply_schedule_for_device(boiler, events, now)
     assert boiler._heat_order is not None
     boiler.clear_heat_order()
     assert boiler._calendar_order_done is not None
-    assert apply_schedule({"b1": boiler}, events, now) is False
+    assert apply_schedule_for_device(boiler, events, now) is False
     assert boiler._heat_order is None
 
 
@@ -177,12 +195,60 @@ def test_calendar_away_applies_upcoming_event_for_prep() -> None:
     start = now + timedelta(hours=5)
     end = start + timedelta(hours=2)
     ev = _ev_device()
-    events = [ParsedEvent("EcoVolter", "away", None, start, end)]
-    assert apply_schedule({"e1": ev}, events, now) is True
+    events = [ParsedEvent("away", None, start, end)]
+    assert apply_schedule_for_device(ev, events, now) is True
     assert ev._away is not None
     assert ev._away["leave_at"] == start.isoformat()
     assert ev._away["return_at"] == end.isoformat()
     assert ev._away["source"] == "calendar"
+
+
+def test_recurring_away_occurrences_pick_soonest() -> None:
+    """Two expanded occurrences of weekly away → soonest future leave wins."""
+    now = datetime(2026, 10, 6, 10, 0, tzinfo=PRAGUE)  # Tuesday
+    leave1 = now + timedelta(hours=5)
+    end1 = leave1 + timedelta(days=1)
+    leave2 = leave1 + timedelta(days=7)
+    end2 = end1 + timedelta(days=7)
+    ev = _ev_device()
+    events = [
+        ParsedEvent("away", None, leave2, end2),
+        ParsedEvent("away", None, leave1, end1),
+    ]
+    assert apply_schedule_for_device(ev, events, now) is True
+    assert ev._away["leave_at"] == leave1.isoformat()
+
+
+def test_parse_events_two_away_occurrences() -> None:
+    now = datetime(2026, 10, 6, 10, 0, tzinfo=PRAGUE)
+    raw = [
+        {
+            "summary": "away",
+            "start": (now + timedelta(hours=5)).isoformat(),
+            "end": (now + timedelta(days=1)).isoformat(),
+        },
+        {
+            "summary": "away",
+            "start": (now + timedelta(days=7, hours=5)).isoformat(),
+            "end": (now + timedelta(days=8)).isoformat(),
+        },
+    ]
+    parsed = parse_events(raw, now)
+    assert len(parsed) == 2
+    assert all(p.kind == "away" for p in parsed)
+
+
+def test_legacy_named_event_skipped_for_other_device() -> None:
+    now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
+    end = now + timedelta(hours=6)
+    boiler = _boiler("Bojler")
+    events = [
+        ParsedEvent(
+            "order_temp", 55.0, now - timedelta(hours=1), end, name="OtherBoiler"
+        )
+    ]
+    assert apply_schedule_for_device(boiler, events, now) is False
+    assert boiler._heat_order is None
 
 
 def test_calendar_away_not_reapplied_after_user_clear() -> None:
@@ -191,12 +257,12 @@ def test_calendar_away_not_reapplied_after_user_clear() -> None:
     start = now + timedelta(hours=5)
     end = start + timedelta(hours=2)
     ev = _ev_device()
-    events = [ParsedEvent("EcoVolter", "away", None, start, end)]
-    apply_schedule({"e1": ev}, events, now)
+    events = [ParsedEvent("away", None, start, end)]
+    apply_schedule_for_device(ev, events, now)
     assert ev._away is not None
     ev.clear_away()
     assert ev._calendar_away_done is not None
-    assert apply_schedule({"e1": ev}, events, now) is False
+    assert apply_schedule_for_device(ev, events, now) is False
     assert ev._away is None
 
 
@@ -207,22 +273,34 @@ def test_calendar_charge_order_does_not_kill_boost() -> None:
     ev = _ev_device()
     ev._ev_soc = 50.0
 
-    events = [ParsedEvent("EcoVolter", "order_soc", 80.0, now - timedelta(hours=1), end)]
-    apply_schedule({"e1": ev}, events, now)
+    events = [ParsedEvent("order_soc", 80.0, now - timedelta(hours=1), end)]
+    apply_schedule_for_device(ev, events, now)
     assert ev._charge_order is not None
     ev.start_boost(70)
     assert ev._boost == {"soc": 70.0}
     assert ev._charge_order is None
     assert ev._calendar_order_done is None
 
-    assert apply_schedule({"e1": ev}, events, now) is False
+    assert apply_schedule_for_device(ev, events, now) is False
     assert ev._boost == {"soc": 70.0}
     assert ev._charge_order is None
 
     ev.stop_boost()
-    assert apply_schedule({"e1": ev}, events, now) is True
+    assert apply_schedule_for_device(ev, events, now) is True
     assert ev._charge_order == {
         "soc": 80.0,
         "deadline": end.isoformat(),
         "source": "calendar",
     }
+
+
+def test_apply_schedule_multi_device_wrapper() -> None:
+    now = datetime(2026, 10, 6, 12, 0, tzinfo=PRAGUE)
+    end = now + timedelta(hours=6)
+    boiler = _boiler()
+    assert apply_schedule(
+        {"b1": boiler},
+        [ParsedEvent("order_temp", 50.0, now - timedelta(hours=1), end)],
+        now,
+    )
+    assert boiler._heat_order["temp"] == 50.0

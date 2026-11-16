@@ -91,8 +91,7 @@
           "notify_on_failsafe": "Notifikovat při pojistce",
           "notify_on_at_risk": "Notifikovat při riziku termínu",
           "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
-          "notify_on_order": "Notifikovat při objednávce EV",
-          "schedule_calendar": "Kalendář plánování (volitelný)"
+          "notify_on_order": "Notifikovat při objednávce EV"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -119,8 +118,7 @@
           "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
           "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
           "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
-          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV.",
-          "schedule_calendar": "Události Local Calendar / Google Calendar řídí objednávky všech zařízení. Příklady: Bojler: 55°C, EcoVolter: 80% (konec = termín); Bojler: max 45°C (po dobu události); EcoVolter: away (start = odjezd / příprava předtím, konec = návrat). Ruční objednávka má přednost."
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -279,8 +277,7 @@
           "notify_on_failsafe": "Notifikovat při pojistce",
           "notify_on_at_risk": "Notifikovat při riziku termínu",
           "notify_on_boost": "Notifikovat při rychlém nabíjení EV",
-          "notify_on_order": "Notifikovat při objednávce EV",
-          "schedule_calendar": "Kalendář plánování (volitelný)"
+          "notify_on_order": "Notifikovat při objednávce EV"
         },
         "data_description": {
           "export_limit_entity": "Number entita z integrace Growattu. Zvedá se, když spotřebiče můžou brát přebytky, aby byl skrytý přebytek vidět.",
@@ -307,8 +304,7 @@
           "notify_on_failsafe": "Když zmizí data ze střídače a když se vrátí.",
           "notify_on_at_risk": "Když plán termínu nestíhá (a AI rada, je-li zapnutá).",
           "notify_on_boost": "Když rychlé nabíjení EV začne nebo skončí.",
-          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV.",
-          "schedule_calendar": "Události Local Calendar / Google Calendar řídí objednávky všech zařízení. Příklady: Bojler: 55°C, EcoVolter: 80% (konec = termín); Bojler: max 45°C (po dobu události); EcoVolter: away (start = odjezd / příprava předtím, konec = návrat). Ruční objednávka má přednost."
+          "notify_on_order": "Když se nastaví nebo zruší objednávka nabíjení EV."
         },
         "description": "Limit přetoku se zadává ve stejné jednotce jako entita limitu ve střídači (W, kW nebo %). Vybraná entita: {export_unit}."
       },
@@ -412,7 +408,8 @@
             "legionella_enabled": "Ochrana proti legionele",
             "legionella_temperature": "Teplota proti legionele",
             "legionella_interval_days": "Interval ochrany proti legionele",
-            "minimum_before_battery": "Minimum před baterií"
+            "minimum_before_battery": "Minimum před baterií",
+            "schedule_calendar": "Kalendář plánování (volitelný)"
           },
           "data_description": {
             "power_sensor": "Pozná, že termostat bojleru už vypnul, a nabídne výkon dalším.",
@@ -429,7 +426,8 @@
             "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
             "legionella_enabled": "Jednou za interval ohřeje vodu na teplotu proti legionele – přednostně z přebytků (dočasně zvýší maximální teplotu), s nahřátím do termínu i v HDO / před termínem. Termostat bojleru musí tuto teplotu dovolit.",
             "legionella_interval_days": "Po kolika dnech od posledního dosažení teploty se ohřev zopakuje.",
-            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "schedule_calendar": "Události jen pro toto zařízení (Local/Google Calendar). Souhrn bez názvu: 55°C / 80% (konec = termín), max 45°C (strop po dobu události), away (start = odjezd, konec = návrat; lze opakovat např. každé úterý). Ruční objednávka má přednost. Starý formát „Název: …“ stále funguje."
           }
         },
         "reconfigure": {
@@ -461,7 +459,8 @@
             "legionella_enabled": "Ochrana proti legionele",
             "legionella_temperature": "Teplota proti legionele",
             "legionella_interval_days": "Interval ochrany proti legionele",
-            "minimum_before_battery": "Minimum před baterií"
+            "minimum_before_battery": "Minimum před baterií",
+            "schedule_calendar": "Kalendář plánování (volitelný)"
           },
           "data_description": {
             "power_sensor": "Pozná, že termostat bojleru už vypnul, a nabídne výkon dalším.",
@@ -478,7 +477,8 @@
             "deadline_earliest": "Volitelná pojistka: dřív se ze sítě nedohřívá. 00:00 = bez omezení (doporučeno s predikcí – plán stejně volí nejpozdější okna).",
             "legionella_enabled": "Jednou za interval ohřeje vodu na teplotu proti legionele – přednostně z přebytků (dočasně zvýší maximální teplotu), s nahřátím do termínu i v HDO / před termínem. Termostat bojleru musí tuto teplotu dovolit.",
             "legionella_interval_days": "Po kolika dnech od posledního dosažení teploty se ohřev zopakuje.",
-            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta."
+            "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "schedule_calendar": "Události jen pro toto zařízení (Local/Google Calendar). Souhrn bez názvu: 55°C / 80% (konec = termín), max 45°C (strop po dobu události), away (start = odjezd, konec = návrat; lze opakovat např. každé úterý). Ruční objednávka má přednost. Starý formát „Název: …“ stále funguje."
           }
         }
       },
@@ -526,7 +526,8 @@
             "ev_capacity_kwh": "Kapacita baterie auta",
             "ev_charge_efficiency": "Účinnost nabíjení",
             "ev_deadline_safety_factor": "Rezerva doby nabíjení",
-            "minimum_before_battery": "Minimum před baterií"
+            "minimum_before_battery": "Minimum před baterií",
+            "schedule_calendar": "Kalendář plánování (volitelný)"
           },
           "data_description": {
             "three_phase_switch": "Zapnuto = 3 fáze. Bez něj se používá pevný počet fází.",
@@ -544,6 +545,7 @@
             "ev_charge_efficiency": "0,9 = 10 % ztráty.",
             "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
             "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "schedule_calendar": "Události jen pro toto zařízení (Local/Google Calendar). Souhrn bez názvu: 80% (konec = termín), away (start = odjezd, konec = návrat; lze opakovat např. každé úterý). Ruční objednávka má přednost. Starý formát „Název: …“ stále funguje.",
             "ev_target_soc_entity": "Entita limitu nabití z auta (např. MySkoda). Má přednost před pevným číslem."
           }
         },
@@ -576,7 +578,8 @@
             "ev_capacity_kwh": "Kapacita baterie auta",
             "ev_charge_efficiency": "Účinnost nabíjení",
             "ev_deadline_safety_factor": "Rezerva doby nabíjení",
-            "minimum_before_battery": "Minimum před baterií"
+            "minimum_before_battery": "Minimum před baterií",
+            "schedule_calendar": "Kalendář plánování (volitelný)"
           },
           "data_description": {
             "three_phase_switch": "Zapnuto = 3 fáze. Bez něj se používá pevný počet fází.",
@@ -594,6 +597,7 @@
             "ev_charge_efficiency": "0,9 = 10 % ztráty.",
             "ev_deadline_safety_factor": "1,2 = začne o 20 % dřív.",
             "minimum_before_battery": "Dokud není dosaženo minima (teplota v termínu / minimální SoC auta), dostane přebytek dřív než domácí baterie. Zabrání nabití baterie a jejímu večernímu vybití do bojleru či auta.",
+            "schedule_calendar": "Události jen pro toto zařízení (Local/Google Calendar). Souhrn bez názvu: 80% (konec = termín), away (start = odjezd, konec = návrat; lze opakovat např. každé úterý). Ruční objednávka má přednost. Starý formát „Název: …“ stále funguje.",
             "ev_target_soc_entity": "Entita limitu nabití z auta (např. MySkoda). Má přednost před pevným číslem."
           }
         }

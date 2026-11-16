@@ -493,6 +493,15 @@ class SwitchedDevice(ManagedDevice):
         return age >= timedelta(days=self.cfg(CONF_LEGIONELLA_INTERVAL_DAYS))
 
     @property
+    def legionella_next(self) -> datetime | None:
+        """When the next anti-legionella cycle is due (last + interval), or None if never run."""
+        if not self.config.get(CONF_LEGIONELLA_ENABLED) or self._legionella_last is None:
+            return None
+        return self._legionella_last + timedelta(
+            days=float(self.cfg(CONF_LEGIONELLA_INTERVAL_DAYS) or 0)
+        )
+
+    @property
     def max_temperature(self) -> float:
         """Surplus storage limit – raised to the legionella temperature when due."""
         maximum = self.cfg(CONF_MAX_TEMPERATURE)
@@ -849,6 +858,11 @@ class SwitchedDevice(ManagedDevice):
             status.extra["legionella_last"] = (
                 self._legionella_last.isoformat() if self._legionella_last else None
             )
+            nxt = self.legionella_next
+            status.extra["legionella_next"] = nxt.isoformat() if nxt else None
+            status.extra["legionella_interval_days"] = int(
+                self.cfg(CONF_LEGIONELLA_INTERVAL_DAYS) or 0
+            )
         is_on = bool(self._is_on)
         blocked = "unavailable" if self._is_on is None else None
         if not blocked and not status.urgent:
@@ -867,11 +881,12 @@ class SwitchedDevice(ManagedDevice):
             self._on_debounce.reset()
             self._off_debounce.reset()
         else:
-            # From a full battery up to half of the power may be borrowed.
+            # Up to half of nominal may be borrowed from the battery (above reserve).
             borrow = self.nominal_w * BORROW_STEP_SHARE if self.borrow else 0.0
+            start_margin = 0.0 if self.borrow else self.cfg(CONF_ON_MARGIN)
             keep_ok = budget + borrow >= status.actual_w - self.cfg(CONF_OFF_TOLERANCE)
             start_ok = (
-                budget + borrow >= self.nominal_w + self.cfg(CONF_ON_MARGIN)
+                budget + borrow >= self.nominal_w + start_margin
                 and headroom.watts(self.phases) >= self.nominal_w
             )
             target = self._decide_on(is_on, keep_ok, start_ok, now)
@@ -1695,21 +1710,42 @@ class EvChargerDevice(ManagedDevice):
         return False
 
     def _choose_phases(self, budget: float, now: float, charging: bool) -> int:
+        """Prefer 3φ; allow 1φ when surplus is low; avoid 1↔3 hunting.
+
+        Up (1→3): need budget ≥ 3φ min + margin for off_delay and phase interval.
+        Down (3→1): first keep 3φ (current can drop via damp); only after a long
+        hold (max of off_delay and phase_switch_interval) switch to 1φ.
+        """
         if not self.can_switch_phases:
             return self._phases_now
         three_min = self._power(self.min_a, 3)
+        one_min = self._power(self.min_a, 1)
+        margin = self.cfg(CONF_ON_MARGIN)
+        off_tol = self.cfg(CONF_OFF_TOLERANCE)
+        interval = float(self.cfg(CONF_PHASE_SWITCH_INTERVAL))
+        off_delay = float(self.cfg(CONF_OFF_DELAY))
         if not charging:
-            # Nothing to interrupt yet – pick the phase count for the start.
+            # Prefer 3φ when there is enough surplus; otherwise start on 1φ.
             self._phase_debounce.reset()
-            return 3 if budget >= three_min + self.cfg(CONF_ON_MARGIN) else 1
+            return 3 if budget >= three_min + margin else 1
         if self._phases_now == 1:
-            wanted = 3 if budget >= three_min + self.cfg(CONF_ON_MARGIN) else 1
+            wanted = 3 if budget >= three_min + margin else 1
+            hold = off_delay
         else:
-            wanted = 1 if budget < three_min - self.cfg(CONF_OFF_TOLERANCE) else 3
-        switch_ok = self._phase_debounce.check(
-            wanted != self._phases_now, now, self.cfg(CONF_OFF_DELAY)
-        )
-        interval_ok = now - self._last_phase_switch >= self.cfg(CONF_PHASE_SWITCH_INTERVAL)
+            # Sticky 3φ: stay while we can keep min current (± off tolerance).
+            if budget >= three_min - off_tol:
+                self._phase_debounce.reset()
+                return 3
+            # Below 3φ keep threshold but still enough for 1φ → queue a slow down-switch.
+            if budget >= one_min - off_tol:
+                wanted = 1
+                hold = max(off_delay, interval)
+            else:
+                # Too little even for 1φ – keep phase; plan() will stop charging.
+                self._phase_debounce.reset()
+                return 3
+        switch_ok = self._phase_debounce.check(wanted != self._phases_now, now, hold)
+        interval_ok = now - self._last_phase_switch >= interval
         if switch_ok and interval_ok:
             return wanted
         return self._phases_now
@@ -1750,12 +1786,14 @@ class EvChargerDevice(ManagedDevice):
             return self._plan_urgent(headroom, charging)
         phases = self._choose_phases(budget, now, charging)
         min_w = self._power(self.min_a, phases)
-        # From a full battery the current is rounded to the nearest step
-        # (at most half a step, e.g. 345 W on 3 phases, is borrowed).
+        # From the battery at most half an amp step is borrowed (e.g. 345 W on 3φ).
+        # When borrow is on, waive on_margin so a sustained export just under
+        # min+margin (e.g. 1.4 kW → 1φ) can still start.
         borrow = self._power(1, phases) * BORROW_STEP_SHARE if self.borrow else 0.0
+        start_margin = 0.0 if self.borrow else self.cfg(CONF_ON_MARGIN)
         keep_ok = budget + borrow >= min_w - self.cfg(CONF_OFF_TOLERANCE)
         start_ok = (
-            budget + borrow >= min_w + self.cfg(CONF_ON_MARGIN) and headroom.watts(phases) >= min_w
+            budget + borrow >= min_w + start_margin and headroom.watts(phases) >= min_w
         )
         target_on = self._decide_on(charging, keep_ok, start_ok, now)
 
@@ -1824,8 +1862,9 @@ class EvChargerDevice(ManagedDevice):
         phases = self._choose_phases(budget, now, charging=False)
         min_w = self._power(self.min_a, phases)
         borrow = self._power(1, phases) * BORROW_STEP_SHARE if self.borrow else 0.0
+        start_margin = 0.0 if self.borrow else self.cfg(CONF_ON_MARGIN)
         start_ok = (
-            budget + borrow >= min_w + self.cfg(CONF_ON_MARGIN) and headroom.watts(phases) >= min_w
+            budget + borrow >= min_w + start_margin and headroom.watts(phases) >= min_w
         )
         self._off_debounce.reset()
         self._on_debounce.check(start_ok, now, self.cfg(CONF_ON_DELAY))

@@ -268,7 +268,6 @@ def _control_schema(v: dict[str, Any]) -> vol.Schema:
             _req(CONF_NOTIFY_ON_AT_RISK, v, DEFAULTS): selector.BooleanSelector(),
             _req(CONF_NOTIFY_ON_BOOST, v, DEFAULTS): selector.BooleanSelector(),
             _req(CONF_NOTIFY_ON_ORDER, v, DEFAULTS): selector.BooleanSelector(),
-            _opt(CONF_SCHEDULE_CALENDAR, v): _entity("calendar"),
         }
     )
 
@@ -619,6 +618,8 @@ def _common_device_fields(v: dict[str, Any]) -> dict[Any, Any]:
         _req(CONF_OFF_DELAY, v, DEVICE_DEFAULTS): _tunable(CONF_OFF_DELAY),
         _req(CONF_ON_MARGIN, v, DEVICE_DEFAULTS): _tunable(CONF_ON_MARGIN),
         _req(CONF_OFF_TOLERANCE, v, DEVICE_DEFAULTS): _tunable(CONF_OFF_TOLERANCE),
+        # Optional Local/Google calendar: events apply only to this device (no name in summary).
+        _opt(CONF_SCHEDULE_CALENDAR, v): _entity("calendar"),
     }
 
 

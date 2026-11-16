@@ -47,8 +47,11 @@ CONF_BATTERY_FULL_SOC: Final = "battery_full_soc"
 # Round device power up to the next step from a full battery
 CONF_BATTERY_BORROW: Final = "battery_borrow"
 BORROW_STEP_SHARE: Final = 0.5  # at most half a step comes from the battery
-BORROW_SOC_BAND: Final = 5.0  # stop borrowing this much below "full"
+BORROW_SOC_BAND: Final = 5.0  # stop borrowing this much below "full" (legacy top band)
 CURRENT_UP_DELAY: Final = 30  # s a higher charging current must hold before it is set
+# Chronic deadline-risk push: after this many calendar days in a row, notify at most weekly.
+AT_RISK_CHRONIC_DAYS: Final = 3
+AT_RISK_CHRONIC_PUSH_DAYS: Final = 7
 CONF_HDO_ENTITY: Final = "hdo_entity"
 CONF_PRICE_VT: Final = "price_vt"  # Kč/kWh incl. distribution, shown on the card
 CONF_PRICE_NT: Final = "price_nt"
@@ -87,7 +90,7 @@ CONF_NOTIFY_ON_AT_RISK: Final = "notify_on_at_risk"
 CONF_NOTIFY_ON_BOOST: Final = "notify_on_boost"
 CONF_NOTIFY_ON_ORDER: Final = "notify_on_order"
 
-# Optional HA calendar whose events drive device orders / away / max-temp caps
+# Optional per-device HA calendar whose events drive orders / away / max-temp caps
 CONF_SCHEDULE_CALENDAR: Final = "schedule_calendar"
 
 DEFAULTS: Final[dict[str, object]] = {

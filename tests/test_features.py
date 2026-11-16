@@ -49,11 +49,12 @@ async def test_battery_target_covers_time_without_production(hass: HomeAssistant
     snap = coordinator.data
     assert snap.night_target_soc == 66.8
     assert snap.effective_target_soc == 66.8
-    assert snap.battery_priority  # 60 % < 66.8 %
+    # Soft night target no longer forces hard battery priority (only reserve SoC does).
+    assert not snap.battery_priority  # 60 % > default reserve 10 %
 
-    hass.states.async_set("sensor.soc", "70")
+    hass.states.async_set("sensor.soc", "5")
     await coordinator.async_refresh()
-    assert not coordinator.data.battery_priority
+    assert coordinator.data.battery_priority  # below reserve
 
     # Switched off → the plain target (100 %) applies again.
     entry = coordinator.config_entry
@@ -272,8 +273,9 @@ async def test_ev_away_keeps_battery_when_forecast_tight(hass: HomeAssistant, fr
         datetime(2026, 10, 1, 18, 50, tzinfo=PRAGUE),
         datetime(2026, 10, 2, 7, 0, tzinfo=PRAGUE),
     )
+    # All surplus into the battery (no export) so hard priority can hold the car off.
     _states(
-        hass, grid=-3000, batt=3000, soc=40,
+        hass, grid=0, batt=3000, soc=40,
         switch__ev_charge="off", input_number__ev_current="6", switch__ev_3f="on",
         binary_sensor__ev_connected="on", sensor__car_soc="40", sensor__forecast="2",
     )
@@ -283,6 +285,8 @@ async def test_ev_away_keeps_battery_when_forecast_tight(hass: HomeAssistant, fr
             "forecast_remaining_today": "sensor.forecast",
             "battery_target_soc": 90.0,
             "battery_max_charge_w": 5000.0,
+            # Hard priority below 50 % SoC so surplus stays with the battery.
+            "battery_reserve_soc": 50.0,
         },
         ("ev_charger", _ev(
             ev_deadline_enabled=False,
@@ -306,7 +310,7 @@ async def test_ev_away_keeps_battery_when_forecast_tight(hass: HomeAssistant, fr
     assert not coordinator.devices[device_id].away_releases_battery()
     assert not coordinator.devices[device_id].minimum_pending
     assert coordinator.data.battery_priority
-    # Battery keeps the surplus (max charge 5 kW); car stays off.
+    # Battery keeps what it absorbs; car stays off (no leftover export).
     assert ("turn_on", "switch.ev_charge", None) not in rec.calls
     assert data["reason"] in ("waiting_for_surplus", "no_surplus")
 
@@ -723,6 +727,10 @@ async def test_legionella_raises_surplus_maximum_until_done(hass: HomeAssistant,
     assert data["legionella_due"] is False
     assert data["reason"] == "temperature_reached"
     assert data["legionella_last"].startswith("2026-09-30T12:00")
+    assert data["legionella_next"].startswith("2026-10-07T12:00")
+    live = next(d for d in coordinator.data.live_data["devices"] if d["id"] == device_id)
+    assert live["legionella_last"].startswith("2026-09-30T12:00")
+    assert live["legionella_next"].startswith("2026-10-07T12:00")
 
     # Restart: the last run survives, so 3 days later it is still not due.
     await hass.config_entries.async_reload(entry.entry_id)
@@ -732,6 +740,9 @@ async def test_legionella_raises_surplus_maximum_until_done(hass: HomeAssistant,
     coordinator = entry.runtime_data
     await coordinator.async_refresh()
     assert coordinator.data.devices[device_id]["legionella_due"] is False
+    assert coordinator.data.devices[device_id]["legionella_next"].startswith(
+        "2026-10-07T12:00"
+    )
 
     freezer.move_to(datetime(2026, 10, 7, 12, 1, tzinfo=PRAGUE))
     await coordinator.async_refresh()
@@ -787,9 +798,12 @@ async def test_boiler_minimum_gets_surplus_before_battery(hass: HomeAssistant, f
     await hass.config.async_set_time_zone("Europe/Prague")
     rec = Recorder(hass)
     freezer.move_to(datetime(2026, 9, 30, 10, 0, tzinfo=PRAGUE))  # long before the deadline
-    # Battery 40 % < 90 % has priority and takes all 3 kW of surplus.
-    _states(hass, grid=0, batt=3000, soc=40, switch__boiler="off", sensor__water="40")
-    entry = _entry({"night_target": False}, ("switched", _min_boiler()))
+    # Below reserve → hard battery priority, but minimum still uses full_budget.
+    _states(hass, grid=0, batt=3000, soc=5, switch__boiler="off", sensor__water="40")
+    entry = _entry(
+        {"night_target": False, "battery_reserve_soc": 10.0},
+        ("switched", _min_boiler()),
+    )
     coordinator = await _setup(hass, entry)
     device_id = next(iter(coordinator.devices))
     data = coordinator.data.devices[device_id]
@@ -797,10 +811,10 @@ async def test_boiler_minimum_gets_surplus_before_battery(hass: HomeAssistant, f
     assert data["reason"] == "running"  # below the 50 °C minimum → before the battery
     assert ("turn_on", "switch.boiler", None) in rec.calls
 
-    # Minimum reached → the battery is first again, the boiler stops.
+    # Minimum reached + max temp → thermal dump blocked; hard priority keeps it off.
     hass.states.async_set("switch.boiler", "on")
-    hass.states.async_set("sensor.batt", "1000")  # boiler now takes 2 kW of the 3 kW
-    hass.states.async_set("sensor.water", "50.5")
+    hass.states.async_set("sensor.batt", "1000")
+    hass.states.async_set("sensor.water", "60.5")
     await coordinator.async_refresh()
     await hass.async_block_till_done()
     assert ("turn_off", "switch.boiler", None) in rec.calls
@@ -810,8 +824,11 @@ async def test_boiler_minimum_before_battery_can_be_disabled(hass: HomeAssistant
     await hass.config.async_set_time_zone("Europe/Prague")
     rec = Recorder(hass)
     freezer.move_to(datetime(2026, 9, 30, 10, 0, tzinfo=PRAGUE))
-    _states(hass, grid=0, batt=3000, soc=40, switch__boiler="off", sensor__water="40")
-    entry = _entry({"night_target": False}, ("switched", _min_boiler(minimum_before_battery=False)))
+    _states(hass, grid=0, batt=3000, soc=5, switch__boiler="off", sensor__water="40")
+    entry = _entry(
+        {"night_target": False, "battery_reserve_soc": 10.0},
+        ("switched", _min_boiler(minimum_before_battery=False)),
+    )
     await _setup(hass, entry)
     assert ("turn_on", "switch.boiler", None) not in rec.calls
 
@@ -835,20 +852,31 @@ async def test_ev_minimum_gets_surplus_before_battery(hass: HomeAssistant, freez
 
 async def test_running_device_gives_way_to_battery(hass: HomeAssistant) -> None:
     rec = Recorder(hass)
-    # Boiler (no minimum) runs 2 kW, battery 40 % gets only 1 kW → boiler must stop.
-    _states(hass, grid=0, batt=1000, soc=40, switch__boiler="on")
-    coordinator = await _setup(hass, _entry({"night_target": False}, ("switched", BOILER)))
+    # Boiler (no minimum) runs 2 kW; SoC below reserve → hard priority, boiler stops.
+    _states(hass, grid=0, batt=1000, soc=5, switch__boiler="on")
+    coordinator = await _setup(
+        hass, _entry({"night_target": False, "battery_reserve_soc": 10.0}, ("switched", BOILER))
+    )
     assert coordinator.data.battery_priority
     assert ("turn_off", "switch.boiler", None) in rec.calls
 
 
 async def test_devices_get_surplus_above_battery_max_charge(hass: HomeAssistant) -> None:
     rec = Recorder(hass)
-    # Battery charges at its 5 kW maximum and 2.5 kW still goes to the grid.
-    _states(hass, grid=-2500, batt=5000, soc=40, limit="10000", switch__boiler="off")
+    # Below reserve: reserve only the observed 5 kW charge; leftover export → boiler.
+    _states(hass, grid=-2500, batt=5000, soc=5, limit="10000", switch__boiler="off")
     coordinator = await _setup(
-        hass, _entry({"night_target": False, "battery_max_charge_w": 5000.0}, ("switched", BOILER))
+        hass,
+        _entry(
+            {
+                "night_target": False,
+                "battery_max_charge_w": 5000.0,
+                "battery_reserve_soc": 10.0,
+            },
+            ("switched", BOILER),
+        ),
     )
+    assert coordinator.data.battery_priority
     assert coordinator.data.budget_w == 2400  # 2500 + 5000 − 5000 − 100
     assert ("turn_on", "switch.boiler", None) in rec.calls
 

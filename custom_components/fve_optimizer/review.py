@@ -121,8 +121,12 @@ Konkrétní oblasti (uveď jen když data ukazují problém nebo příležitost)
   cíl minima; vypnutí deadline_hdo_only jen jako krajní možnost (dohřev i ve VT);
 - forecast nestačí na baterii a zařízení bez termínu = OK (mají čekat); se zapnutým
   termínem mají jít ze sítě / NT;
-- vysoký export + nízké využití zařízení při „devices first“ → limity teploty/SoC
-  nebo priorita;
+- vysoký export / unused_export při volné kapacitě (auto připojené, bojler pod max)
+  → trestej známku; navrhni margin, borrow, delaye nebo limity SoC/teploty;
+- forecast_covers_battery=false a SoC nad rezervou: nehoardovat baterii na úkor
+  přetoku – zařízení mají brát nevyužitý export;
+- „calibration“: deník metrik a last_changes – navrhuj jen při shodě více dnů,
+  ne reverse-flip po včerejší změně stejného klíče;
 - skutečné spínání (viz výše) → delší NEBO kratší on_delay_s / off_delay_s;
 - pojistka (failsafe) → senzory / timeout;
 - dry_run: hodnotí doporučení, ne skutečné spínání.
@@ -590,6 +594,27 @@ def build_day_data(coordinator: FveOptimizerCoordinator) -> dict[str, Any]:
                 "integration_switches": integration_switches,
                 "export_kwh": day.get("export_kwh", 0.0),
                 "import_kwh": day.get("import_kwh", 0.0),
+                "unused_export_risk": bool(
+                    snap
+                    and (snap.budget_parts or {}).get("export", 0) > 200
+                    and not snap.battery_priority
+                ),
+                "forecast_covers_battery": (
+                    snap.forecast_covers_battery if snap else None
+                ),
+                "battery_priority": snap.battery_priority if snap else None,
+                "battery_reserve_soc": conf.get("battery_reserve_soc"),
+                "effective_target_soc": snap.effective_target_soc if snap else None,
+            },
+            "calibration": coordinator.calibration.summary_for_ui(),
+            "calibration_hints": {
+                "night_power_w": conf.get("night_power_w"),
+                "house_avg_power_w": conf.get("house_avg_power_w"),
+                "note": (
+                    "Navrhuj změnu konstanty jen když „calibration.recent“ ukazuje "
+                    "stejný směr aspoň 3 z posledních dní. Po schválení změny "
+                    "nenavrhuj opačný směr 5 dní (anti-oscilace). Uživatel schválí."
+                ),
             },
             "recommendations": {
                 "finished": day.get("recommendations", []),
@@ -950,6 +975,12 @@ async def async_review(
     proposals = parse_proposals(
         coordinator, result.get("proposals"), day_settings=data.get("settings")
     )
+    today = dt_util.now().date()
+    proposals = coordinator.calibration.annotate_ai_proposals(proposals, today)
+    candidates = coordinator.calibration.build_candidates(coordinator)
+    proposals = coordinator.calibration.merge_candidates(
+        proposals, candidates, coordinator
+    )
     review = {
         "at": dt_util.now().isoformat(),
         "date": data["date"],
@@ -961,6 +992,7 @@ async def async_review(
         "problems": str(result.get("problems") or "").strip(),
         "suggestions": str(result.get("suggestions") or "").strip(),
         "proposals": proposals,
+        "calibration": coordinator.calibration.summary_for_ui(),
         "outlook": str(result.get("outlook") or "").strip(),
         "discussion": [],
     }

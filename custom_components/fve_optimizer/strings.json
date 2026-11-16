@@ -91,8 +91,7 @@
           "notify_on_failsafe": "Notify on fail-safe",
           "notify_on_at_risk": "Notify when a deadline is at risk",
           "notify_on_boost": "Notify on EV boost",
-          "notify_on_order": "Notify on EV charge order",
-          "schedule_calendar": "Schedule calendar (optional)"
+          "notify_on_order": "Notify on EV charge order"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -119,8 +118,7 @@
           "notify_on_failsafe": "When inverter data is lost and when it returns.",
           "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
           "notify_on_boost": "When fast EV charging starts or ends.",
-          "notify_on_order": "When an EV charge order is set or cleared.",
-          "schedule_calendar": "Local Calendar / Google Calendar events drive orders for all devices. Examples: Bojler: 55°C, EcoVolter: 80% (event end = deadline); Bojler: max 45°C (while active); EcoVolter: away (start = leave / prep before, end = return). Manual orders take priority."
+          "notify_on_order": "When an EV charge order is set or cleared."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -279,8 +277,7 @@
           "notify_on_failsafe": "Notify on fail-safe",
           "notify_on_at_risk": "Notify when a deadline is at risk",
           "notify_on_boost": "Notify on EV boost",
-          "notify_on_order": "Notify on EV charge order",
-          "schedule_calendar": "Schedule calendar (optional)"
+          "notify_on_order": "Notify on EV charge order"
         },
         "data_description": {
           "export_limit_entity": "Number entity from the inverter integration. Raised while loads can take surplus so hidden surplus becomes visible.",
@@ -307,8 +304,7 @@
           "notify_on_failsafe": "When inverter data is lost and when it returns.",
           "notify_on_at_risk": "When a deadline plan can no longer finish in time (and AI tip if enabled).",
           "notify_on_boost": "When fast EV charging starts or ends.",
-          "notify_on_order": "When an EV charge order is set or cleared.",
-          "schedule_calendar": "Local Calendar / Google Calendar events drive orders for all devices. Examples: Bojler: 55°C, EcoVolter: 80% (event end = deadline); Bojler: max 45°C (while active); EcoVolter: away (start = leave / prep before, end = return). Manual orders take priority."
+          "notify_on_order": "When an EV charge order is set or cleared."
         },
         "description": "Export limits use the same unit as the inverter's limit entity (W, kW or %). Selected entity: {export_unit}."
       },
@@ -412,7 +408,8 @@
             "legionella_enabled": "Anti-legionella",
             "legionella_temperature": "Anti-legionella temperature",
             "legionella_interval_days": "Anti-legionella interval",
-            "minimum_before_battery": "Minimum before battery"
+            "minimum_before_battery": "Minimum before battery",
+            "schedule_calendar": "Schedule calendar (optional)"
           },
           "data_description": {
             "power_sensor": "Detects that the boiler thermostat cut off and offers the power to others.",
@@ -429,7 +426,8 @@
             "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
             "legionella_enabled": "Once per interval heats the water to the anti-legionella temperature – preferably from surplus (temporarily raises the maximum), with deadline heating also in HDO / before the deadline. The boiler thermostat must allow this temperature.",
             "legionella_interval_days": "Days after the last time the temperature was reached.",
-            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
+            "schedule_calendar": "Events apply only to this device (Local/Google Calendar). Summary without a name: 55°C / 80% (end = deadline), max 45°C (cap while active), away (start = leave, end = return; can recur e.g. every Tuesday). Manual orders take priority. Legacy “Name: …” still works."
           }
         },
         "reconfigure": {
@@ -461,7 +459,8 @@
             "legionella_enabled": "Anti-legionella",
             "legionella_temperature": "Anti-legionella temperature",
             "legionella_interval_days": "Anti-legionella interval",
-            "minimum_before_battery": "Minimum before battery"
+            "minimum_before_battery": "Minimum before battery",
+            "schedule_calendar": "Schedule calendar (optional)"
           },
           "data_description": {
             "power_sensor": "Detects that the boiler thermostat cut off and offers the power to others.",
@@ -478,7 +477,8 @@
             "deadline_earliest": "Optional safeguard: no grid heating before this time. 00:00 = no limit (recommended with a forecast – the plan picks the latest windows anyway).",
             "legionella_enabled": "Once per interval heats the water to the anti-legionella temperature – preferably from surplus (temporarily raises the maximum), with deadline heating also in HDO / before the deadline. The boiler thermostat must allow this temperature.",
             "legionella_interval_days": "Days after the last time the temperature was reached.",
-            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening."
+            "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
+            "schedule_calendar": "Events apply only to this device (Local/Google Calendar). Summary without a name: 55°C / 80% (end = deadline), max 45°C (cap while active), away (start = leave, end = return; can recur e.g. every Tuesday). Manual orders take priority. Legacy “Name: …” still works."
           }
         }
       },
@@ -526,7 +526,8 @@
             "ev_capacity_kwh": "Car battery capacity",
             "ev_charge_efficiency": "Charging efficiency",
             "ev_deadline_safety_factor": "Charging time margin",
-            "minimum_before_battery": "Minimum before battery"
+            "minimum_before_battery": "Minimum before battery",
+            "schedule_calendar": "Schedule calendar (optional)"
           },
           "data_description": {
             "three_phase_switch": "On = 3 phases. Without it a fixed phase count is used.",
@@ -544,7 +545,8 @@
             "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
             "ev_target_soc": "Fixed ceiling when the charge-limit entity is not set or unavailable. Charging stops at this value (never aims above it).",
             "ev_target_soc_hysteresis": "Lower hysteresis only: after reaching the maximum, surplus charging resumes only after the SoC drops by this much. The target is never raised above the limit.",
-            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number."
+            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number.",
+            "schedule_calendar": "Events apply only to this device (Local/Google Calendar). Summary without a name: 80% (end = deadline), away (start = leave, end = return; can recur e.g. every Tuesday). Manual orders take priority. Legacy “Name: …” still works."
           }
         },
         "reconfigure": {
@@ -576,7 +578,8 @@
             "ev_capacity_kwh": "Car battery capacity",
             "ev_charge_efficiency": "Charging efficiency",
             "ev_deadline_safety_factor": "Charging time margin",
-            "minimum_before_battery": "Minimum before battery"
+            "minimum_before_battery": "Minimum before battery",
+            "schedule_calendar": "Schedule calendar (optional)"
           },
           "data_description": {
             "three_phase_switch": "On = 3 phases. Without it a fixed phase count is used.",
@@ -594,7 +597,8 @@
             "minimum_before_battery": "Until the minimum is reached (deadline temperature / minimum car SoC), surplus goes here before the home battery. Avoids charging the battery only to discharge it into the boiler or car in the evening.",
             "ev_target_soc": "Fixed ceiling when the charge-limit entity is not set or unavailable. Charging stops at this value (never aims above it).",
             "ev_target_soc_hysteresis": "Lower hysteresis only: after reaching the maximum, surplus charging resumes only after the SoC drops by this much. The target is never raised above the limit.",
-            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number."
+            "ev_target_soc_entity": "Charge-limit entity from the car (e.g. MySkoda). Takes precedence over the fixed number.",
+            "schedule_calendar": "Events apply only to this device (Local/Google Calendar). Summary without a name: 80% (end = deadline), away (start = leave, end = return; can recur e.g. every Tuesday). Manual orders take priority. Legacy “Name: …” still works."
           }
         }
       },

@@ -34,6 +34,8 @@ from .const import (
     CONF_NIGHT_POWER_W,
     CONF_NIGHT_TARGET,
     CONF_BREAKER_MARGIN_A,
+    AT_RISK_CHRONIC_DAYS,
+    AT_RISK_CHRONIC_PUSH_DAYS,
     BORROW_SOC_BAND,
     CHARGE_FORECAST_INTERVAL_H,
     CHARGE_FORECAST_LATEST_HOUR,
@@ -84,7 +86,7 @@ from .const import (
     HUB_TUNABLE_KEYS,
 )
 from .hdo import HdoSchedule, settings_from_conf
-from .schedule import apply_schedule, async_fetch_events, parse_events
+from .schedule import apply_schedule_for_device, async_fetch_events, parse_events
 from .notify import (
     EVENT_AWAY,
     EVENT_BOOST,
@@ -228,7 +230,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         # Deadline at_risk edge detection + AI outlook-check rate limit (device_id → date).
         self._at_risk_ids: set[str] = set()
         self._outlook_check_day: dict[str, str] = {}
+        # Chronic at_risk: sid → {"streak": int, "last_day": str, "last_push": str|None}
+        self._at_risk_chronic: dict[str, dict[str, Any]] = {}
         self._boost_ids: set[str] = set()
+        from .calibration import CalibrationStore  # noqa: PLC0415
+
+        self.calibration = CalibrationStore()
         # Days the limit was raised / lowered – at most one raise per day.
         self._export_raised_day: str | None = None
         self._export_lowered_day: str | None = None
@@ -267,6 +274,11 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         export = self._saved_state.get("_export", {})
         self._export_raised_day = export.get("raised_day")
         self._export_lowered_day = export.get("lowered_day")
+        self._at_risk_chronic = {
+            sid: dict(v)
+            for sid, v in (self._saved_state.get("_at_risk_chronic") or {}).items()
+        }
+        self.calibration.load(self._saved_state.get("_calibration"))
 
     def _save_state(self) -> None:
         state: dict[str, Any] = {sid: d.persistent() for sid, d in self.devices.items()}
@@ -274,6 +286,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "raised_day": self._export_raised_day,
             "lowered_day": self._export_lowered_day,
         }
+        state["_at_risk_chronic"] = self._at_risk_chronic
+        state["_calibration"] = self.calibration.dump()
         state["_decision_log"] = self._decision_log
         state["_stats"] = self._stats
         state["_day"] = self._day
@@ -756,7 +770,11 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         target_soc, covered = self._battery_target(soc, base_house_w, snap)
         snap.effective_target_soc = target_soc
         snap.forecast_covers_battery = covered
-        snap.battery_priority = soc < target_soc
+        # Hard battery priority only below the configured reserve SoC. Above it,
+        # minima and surplus dump may use power the inverter is not absorbing
+        # (export); the soft target is still exposed for UI / solar share.
+        reserve_soc = self._f(CONF_BATTERY_RESERVE_SOC)
+        snap.battery_priority = soc < reserve_soc
         self._prepare_away_lend(snap, soc, base_house_w)
         # Away + refillable after leave: do not hold surplus in the house battery.
         from .devices import EvChargerDevice  # noqa: PLC0415
@@ -772,21 +790,20 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             self._f(CONF_BATTERY_CAPACITY_KWH) * max(target_soc - soc, 0.0) / 100,
         )
 
-        # Full budget = what managed devices use now + battery charging + export,
-        # minus imports. While the battery has priority it first gets up to its
-        # maximum charging power; only what is left beyond that is surplus for
-        # the devices – so running devices give way to the battery as well.
+        # Full budget = managed load − grid (+ charge) − reserve. Hard battery
+        # priority: if there is still export, reserve only the observed charge
+        # (taper must not invent a 5 kW hole). If nothing is exporting, reserve
+        # up to max charge so devices give way and the battery can ramp.
         full_budget = snap.managed_w - grid + battery - self._f(CONF_RESERVE_W)
-        budget = full_budget
-        if snap.battery_priority:
-            budget -= self._f(CONF_BATTERY_MAX_CHARGE_W)
+        reserved = self._battery_charge_reserve_w(snap, battery, grid)
+        budget = full_budget - reserved
         snap.budget_w = budget
         snap.budget_parts = {
             "devices": snap.managed_w,
             "export": max(-grid, 0.0),
             "import": max(grid, 0.0),
             "battery": battery,
-            "battery_reserved": self._f(CONF_BATTERY_MAX_CHARGE_W) if snap.battery_priority else 0.0,
+            "battery_reserved": reserved,
             "reserve": self._f(CONF_RESERVE_W),
         }
 
@@ -819,6 +836,15 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
 
         await self._control_export_limit(snap, active, soc, base_house_w)
         snap.reason = "battery_priority" if snap.battery_priority else "dispatching"
+        # Flag unused export for the calibration diary (settled at day roll).
+        if (
+            not snap.battery_priority
+            and max(-grid, 0.0) > 200
+            and any(
+                d.enabled and d.status.wants_power and not d.status.active for d in active
+            )
+        ):
+            self.today()["unused_export_risk"] = True
         return self._finish(snap)
 
     def _dispatch_key(self, device: ManagedDevice) -> tuple:
@@ -884,6 +910,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 info = pop()
                 if info:
                     completed_orders.append((sid, device, info))
+        self._track_at_risk_streaks(at_risk)
         new_risk = at_risk - self._at_risk_ids
         self._at_risk_ids = at_risk
         ended_boost = self._boost_ids - boosting
@@ -892,6 +919,38 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             self.hass.async_create_task(
                 self._async_handle_alert_edges(snap, new_risk, ended_boost, completed_orders)
             )
+
+    def _track_at_risk_streaks(self, at_risk: set[str]) -> None:
+        """Count consecutive calendar days a device was at_risk (for push throttle)."""
+        today = dt_util.now().date()
+        today_s = today.isoformat()
+        yesterday_s = (today - timedelta(days=1)).isoformat()
+        for sid in at_risk:
+            row = self._at_risk_chronic.setdefault(sid, {})
+            last = row.get("last_day")
+            if last == today_s:
+                continue
+            if last == yesterday_s:
+                row["streak"] = int(row.get("streak") or 0) + 1
+            else:
+                row["streak"] = 1
+            row["last_day"] = today_s
+
+    def _at_risk_push_allowed(self, sid: str, today: str) -> bool:
+        """Suppress daily push once at_risk is chronic; allow at most weekly."""
+        row = self._at_risk_chronic.get(sid) or {}
+        streak = int(row.get("streak") or 0)
+        if streak < AT_RISK_CHRONIC_DAYS:
+            return True
+        last_push = row.get("last_push")
+        if not last_push:
+            return True
+        try:
+            last = datetime.fromisoformat(last_push).date()
+            now = datetime.fromisoformat(today).date()
+        except ValueError:
+            return True
+        return (now - last).days >= AT_RISK_CHRONIC_PUSH_DAYS
 
     async def _async_handle_alert_edges(
         self,
@@ -929,6 +988,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             )
             await async_dismiss(self.hass, self, f"order_{sid}")
 
+        today = dt_util.now().date().isoformat()
         for sid in new_risk:
             device = self.devices.get(sid)
             if not device:
@@ -963,6 +1023,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     },
                 },
             )
+            push = self._at_risk_push_allowed(sid, today)
             title, message = msg_at_risk(self.hass, device.name, detail)
             await async_notify(
                 self.hass,
@@ -970,10 +1031,12 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                 title=title,
                 message=message,
                 notification_id=f"at_risk_{sid}",
-                enabled=bool(self.conf.get(CONF_NOTIFY_ON_AT_RISK)),
+                enabled=bool(self.conf.get(CONF_NOTIFY_ON_AT_RISK)) and push,
             )
+            if push:
+                chronic = self._at_risk_chronic.setdefault(sid, {})
+                chronic["last_push"] = today
             if self.conf.get(CONF_AI_OUTLOOK_CHECK) and self.conf.get(CONF_AI_TASK_ENTITY):
-                today = dt_util.now().date().isoformat()
                 if self._outlook_check_day.get(sid) != today:
                     self._outlook_check_day[sid] = today
                     self.hass.async_create_task(self._async_outlook_check(sid))
@@ -1190,6 +1253,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             "review_running": self.review_running,
             "review_asking": self.review_asking,
             "review_error": self.review_error,
+            "calibration": self.calibration.summary_for_ui(),
             "morning_plan": self.morning_plan_for_ui(),
             "morning_running": self.morning_running,
             "charge_forecast": self.charge_forecast_for_ui(),
@@ -1240,6 +1304,11 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "battery_lend_kwh": d.status.extra.get("battery_lend_kwh"),
                     "car_budget_kwh": d.status.extra.get("car_budget_kwh"),
                     "legionella_due": d.status.extra.get("legionella_due"),
+                    "legionella_last": d.status.extra.get("legionella_last"),
+                    "legionella_next": d.status.extra.get("legionella_next"),
+                    "legionella_interval_days": d.status.extra.get(
+                        "legionella_interval_days"
+                    ),
                     "connected": d.status.extra.get("connected"),
                     "plan": d.status.extra.get("deadline_plan"),
                     "at_risk": d.status.extra.get("deadline_at_risk"),
@@ -1497,6 +1566,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         live["review_running"] = self.review_running
         live["review_asking"] = self.review_asking
         live["review_error"] = self.review_error
+        live["calibration"] = self.calibration.summary_for_ui()
         live["morning_plan"] = self.morning_plan_for_ui()
         live["morning_running"] = self.morning_running
         live["charge_forecast"] = self.charge_forecast_for_ui()
@@ -1509,6 +1579,7 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
                     "review_running": self.review_running,
                     "review_asking": self.review_asking,
                     "review_error": self.review_error,
+                    "calibration": live["calibration"],
                     "morning_plan": live["morning_plan"],
                     "morning_running": self.morning_running,
                     "charge_forecast": live["charge_forecast"],
@@ -1534,6 +1605,8 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self.review_error = None
         self._review_day_data = day_data
         self.reviews = [review, *self.reviews][:REVIEW_HISTORY]
+        # Snapshot today's metrics into the diary (don't wait for midnight) + score.
+        self._snapshot_calibration_today(score=review.get("score"))
         self._save_state()
         await self.async_request_refresh()
         self._sync_review_live()
@@ -1645,6 +1718,15 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         self._write_proposal_value(prop)
         prop["status"] = "applied"
         prop["applied_at"] = dt_util.now().isoformat()
+        self.calibration.record_change(
+            day=dt_util.now().date().isoformat(),
+            target=str(prop.get("target") or "hub"),
+            key=str(prop.get("key") or ""),
+            from_val=prop.get("from"),
+            to_val=prop.get("to"),
+            status="applied",
+            source=str(prop.get("source") or "ai"),
+        )
         self._save_state()
         await self.async_request_refresh()
         self._sync_review_live()
@@ -1670,6 +1752,15 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
             raise HomeAssistantError(f"Proposal is not pending ({prop.get('status')})")
         prop["status"] = "dismissed"
         prop["dismissed_at"] = dt_util.now().isoformat()
+        self.calibration.record_change(
+            day=dt_util.now().date().isoformat(),
+            target=str(prop.get("target") or "hub"),
+            key=str(prop.get("key") or ""),
+            from_val=prop.get("from"),
+            to_val=prop.get("to"),
+            status="dismissed",
+            source=str(prop.get("source") or "ai"),
+        )
         self._save_state()
         self._sync_review_live()
         return prop
@@ -1807,8 +1898,52 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         """Today's overview bucket (reset at local midnight)."""
         date = dt_util.now().date().isoformat()
         if self._day.get("date") != date:
+            if self._day.get("date"):
+                self._finalize_calibration_day(self._day)
             self._day = {"date": date, "switches": {}, "log": [], "failsafe_s": 0.0}
         return self._day
+
+    def _calibration_day_entry(
+        self, day: dict[str, Any], *, score: int | None = None
+    ) -> dict[str, Any]:
+        from .review import _switching_stats  # noqa: PLC0415
+
+        switches = day.get("switches") or {}
+        short = 0
+        integration = 0
+        for _sid, entries in switches.items():
+            stats = _switching_stats(list(entries))
+            short += int(stats.get("short_cycles") or 0)
+            integration += int(stats.get("integration_count") or 0)
+        at_risk_names = [
+            self.devices[sid].name
+            for sid, row in (self._at_risk_chronic or {}).items()
+            if row.get("last_day") == day.get("date") and sid in self.devices
+        ]
+        entry = {
+            "date": day.get("date"),
+            "export_kwh": round(float(day.get("export_kwh") or 0), 3),
+            "import_kwh": round(float(day.get("import_kwh") or 0), 3),
+            "short_cycles": short,
+            "integration_switches": integration,
+            "at_risk": at_risk_names,
+            "unused_export_risk": bool(day.get("unused_export_risk")),
+            "night_kwh_est": day.get("battery_discharge_kwh"),
+            "night_hours": self.data.night_hours if self.data else None,
+            "score": score if score is not None else day.get("score"),
+        }
+        return entry
+
+    def _finalize_calibration_day(self, day: dict[str, Any]) -> None:
+        """Roll a finished local day into the calibration diary."""
+        self.calibration.record_day(self._calibration_day_entry(day))
+
+    def _snapshot_calibration_today(self, *, score: int | None = None) -> None:
+        """Upsert today's running metrics (called from evening review)."""
+        day = self.today()
+        if score is not None:
+            day["score"] = score
+        self.calibration.record_day(self._calibration_day_entry(day, score=score))
 
     def _track_switching(self) -> None:
         """Record observed on/off changes per device (for the review)."""
@@ -1891,16 +2026,30 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         return done
 
     async def _async_sync_schedule_calendar(self) -> None:
-        """Pull optional hub calendar events into device orders / away / max caps."""
-        entity_id = self.conf.get(CONF_SCHEDULE_CALENDAR)
-        if not entity_id:
-            return
+        """Pull optional per-device calendar events into orders / away / max caps."""
         now = dt_util.now()
-        raw = await async_fetch_events(self.hass, str(entity_id), now)
-        if raw is None:
-            # Keep last calendar-derived state across transient calendar outages.
-            return
-        if apply_schedule(self.devices, parse_events(raw, now), now):
+        changed = False
+        # Same calendar entity may be shared; fetch once per entity_id.
+        cache: dict[str, list | None] = {}
+        for device in self.devices.values():
+            if not device.enabled:
+                continue
+            entity_id = device.config.get(CONF_SCHEDULE_CALENDAR)
+            if not entity_id:
+                continue
+            key = str(entity_id)
+            if key not in cache:
+                cache[key] = await async_fetch_events(self.hass, key, now)
+            raw = cache[key]
+            if raw is None:
+                # Keep last calendar-derived state across transient calendar outages.
+                continue
+            events = parse_events(
+                raw, now, log_unparsed_for=f"{device.name} ({key})"
+            )
+            if apply_schedule_for_device(device, events, now):
+                changed = True
+        if changed:
             self._save_state()
 
     def _ev_by_id_or_name(self, device_id: str | None = None, name: str | None = None):
@@ -2286,17 +2435,39 @@ class FveOptimizerCoordinator(DataUpdateCoordinator[DispatchSnapshot]):
         snap.reason = "failsafe"
         return self._finish(snap)
 
-    def _borrow_allowed(self, snap: DispatchSnapshot, soc: float) -> bool:
-        """Round devices up from the battery: from "full" down to full − band.
+    def _battery_charge_reserve_w(
+        self, snap: DispatchSnapshot, battery_w: float, grid_w: float
+    ) -> float:
+        """Watts held for hard battery priority.
 
-        Only while producing and the battery has no priority. The hysteresis
-        keeps the battery in shallow cycles at the top and the devices from
-        toggling; their own delays and minimum times still apply.
+        With export still flowing, reserve only the observed charge so taper
+        does not starve devices. With no export, reserve up to max charge so
+        running loads give way while the battery refills the reserve band.
+        """
+        if not snap.battery_priority:
+            return 0.0
+        max_w = self._f(CONF_BATTERY_MAX_CHARGE_W)
+        observed = max(battery_w, 0.0)
+        if grid_w < 0:
+            return min(max_w, observed)
+        return max_w
+
+    def _borrow_allowed(self, snap: DispatchSnapshot, soc: float) -> bool:
+        """Round devices up from the battery: near full, or while exporting.
+
+        Export + SoC above reserve: borrow so a slightly short surplus can start
+        a load (1φ EV / boiler) instead of spilling to the grid. Without export,
+        keep the legacy full − band hysteresis so small battery-only surplus is
+        not rounded up into dumps.
         """
         producing = self._producing()
+        reserve = self._f(CONF_BATTERY_RESERVE_SOC)
         full = self._f(CONF_BATTERY_FULL_SOC)
+        exporting = snap.grid_w is not None and snap.grid_w < 0
         if not self.conf.get(CONF_BATTERY_BORROW) or snap.battery_priority or not producing:
             self._borrow_active = False
+        elif exporting and soc > reserve:
+            self._borrow_active = True
         elif soc >= full:
             self._borrow_active = True
         elif soc < full - BORROW_SOC_BAND:

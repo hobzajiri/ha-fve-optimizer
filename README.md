@@ -12,13 +12,17 @@ na elektroměru a není potřeba ho odhadovat zkoušením.
 Každých N sekund (výchozí 15 s) dispečer:
 
 1. Přečte výkon sítě, baterie a SoC.
-2. Určí, jestli má přednost baterie. Ta má přednost do **cílového SoC**. Pokud
-   zbývající predikce (Solcast) pokryje dobití baterie i spotřebu domu do západu
-   slunce (× bezpečnostní koeficient), cíl se sníží na **SoC při dostatečné
-   predikci** a spotřebiče dostanou přebytky dřív.
+2. **Tvrdá přednost baterie** jen pod **Rezervou baterie**. Nad rezervou mají
+   přednost minima (bojler → auto) a využití přebytku; soft cíl (noc / predikce)
+   se pořád počítá pro UI a JIT, ale neblokuje spotřebiče fiktivním maximem nabíjení.
+   Pokud predikce pokryje dobití i dům do západu, soft cíl klesne na **SoC při
+   dostatečné predikci**.
 3. Spočítá **přebytek k rozdělení**:
-   `spotřeba řízených zařízení − výkon sítě (+ nabíjení baterie, pokud už nemá přednost) − rezerva`
-4. Rozdělí ho mezi zařízení podle priority (nižší číslo = dřív).
+   `spotřeba řízených zařízení − výkon sítě + nabíjení − rezerva` (− jen **skutečný**
+   nabíjecí výkon, když je tvrdá priorita — ne celé max. nabíjení).
+4. Rozdělí ho: urgent → minimum bojler → minimum auto → zbytek (auto z přebytků,
+   bojler dump) podle priority. EV preferuje **3φ**, při malém přebytku smí **1φ**,
+   bez častého přepínání (nejdřív sníží proud, dolů na 1φ až po dlouhém držení).
 5. Řídí limit přetoku s co nejméně zápisy do střídače:
    * **zvedne ho jednou denně ráno**, když je kam ukládat (bojler, auto) a
      predikce slibuje přebytek nad spotřebu domu a dobití baterie,
@@ -76,16 +80,21 @@ služba `fve_optimizer.set_ev_charge_order` (alias `set_device_order` s
 `set_device_order` s `target_temp`. Stejná filozofie jako denní termín
 (přebytky, jinak NT / těsně před termínem). Zrušení `clear_heat_order`.
 
-**Kalendář plánování** (volitelný v nastavení hubu – Control): jedna entita
-`calendar.*` (Local Calendar, Google…). Události řídí všechna zařízení podle
-**názvu** (stejného jako u subentry). Ruční objednávka má přednost.
+**Kalendář plánování** (volitelný u **každého zařízení**): entita `calendar.*`
+(Local Calendar, Google…). Události platí jen pro to zařízení — v souhrnu **není
+název**. Hubový společný kalendář už není; pokud jsi ho měl, přemapuj v
+reconfigure subentry. Ruční objednávka má přednost.
 
-| Souhrn události | Význam |
-|-----------------|--------|
-| `Bojler: 55°C` | Nahřát na 55 °C; **konec události = termín** |
-| `EcoVolter: 80%` | Nabít na 80 %; konec = termín |
-| `Bojler: max 45°C` | Po dobu události strop přebytků 45 °C |
-| `EcoVolter: away` | Odjezd: **start** = leave (příprava auta před startem), **konec** = návrat |
+| Souhrn události | Zařízení | Význam |
+|-----------------|----------|--------|
+| `55°C` | bojler | Nahřát; **konec události = termín** |
+| `80%` | EV | Nabít; konec = termín |
+| `max 45°C` | bojler | Po dobu události strop přebytků 45 °C |
+| `away` | EV | Odjezd: **start** = leave (příprava před startem), **konec** = návrat |
+
+Opakovaný odjezd (např. každé úterý 15:00): v kalendáři EV založ opakovanou
+událost `away` (start = odjezd, konec = návrat). HA occurrence expanduje sám.
+Starý formát `EcoVolter: away` v souhrnu pořád funguje.
 
 **Rychlé nabíjení**: tlačítko na kartě / `start_ev_boost` — od teď naplno
 (bez HDO), s odhadem času. Stop na kartě nebo `stop_ev_boost`.
@@ -111,7 +120,8 @@ S **Nabít do termínu** přibude **Termín nabití**, **Minimální SoC v term�
 **teplotu proti legionele** (65 °C). Maximální teplota z přebytků se dočasně
 zvýší, takže se to obvykle stihne z přebytků. S **Nahřát do termínu** se
 v termínu dohřeje i ze sítě (v HDO). Datum posledního ohřevu přežije restart
-(atribut `legionella_last`). Termostat bojleru musí tuto teplotu dovolit.
+(`legionella_last`); na kartě u bojleru je **naposledy** / **další**
+(`legionella_next` = last + interval). Termostat bojleru musí tuto teplotu dovolit.
 
 ### Poslední rozhodnutí
 
@@ -121,29 +131,28 @@ souhrn, např. *Baterie 72 % → cíl 67 % (přednost zařízení) · Bojler: b�
 rozhodnutí, takže v logbooku je historie, proč se co stalo. Podrobnosti jsou
 v atributu `details`.
 
-### Pořadí: minimum před baterií
+### Pořadí: minima → baterie → přebytek
 
 1. **Nucený režim** (termín bojleru, legionela, auto ráno) – běží vždy.
 2. **Zařízení pod minimem** (bojler pod teplotou v termínu, auto pod minimálním
-   SoC) dostanou přebytek **před baterií**, ale jen do minima. Jinak by se
-   baterie nabila ze slunce a večer vybila do bojleru – zbytečný cyklus se
-   ztrátami. Vypíná se přepínačem **Minimum před baterií**.
-3. **Baterie** do cílového SoC – dokud má přednost, zařízení dostanou jen
-   přebytek nad **Max. nabíjecí výkon baterie** a i běžící zařízení uhnou.
+   SoC) dostanou přebytek **před baterií**, ale jen do minima. Vypíná se
+   přepínačem **Minimum před baterií**.
+3. **Tvrdá přednost baterie** jen pod **Rezervou baterie**. Nad rezervou baterie
+   neblokuje spotřebiče; při tvrdé prioritě a přetoku se rezervuje jen
+   **skutečný** nabíjecí výkon (ne celé maximum), ať taper nenechá přebytek v síti.
 4. **Ostatní** podle priority. **Auto pod cílovým SoC z přebytků** má přednost
-   před ohřevem bojleru **nad teplotou v termínu** (sklad tepla do max. teploty,
-   např. 74 °C) – není potřeba večer ručně přehazovat priority. Termín / minimum
-   bojleru i auta zůstávají výš (kroky 1–2).
+   před ohřevem bojleru **nad teplotou v termínu**. EV preferuje 3φ, při malém
+   přebytku smí 1φ, bez častého přepínání fází.
 
-### Dorovnání z plné baterie
+### Dorovnání z baterie
 
 Zařízení nastavují výkon po krocích (auto po 1 A = 690 W na 3 fázích, bojler
 jen celým příkonem). Když je baterie plná, zaokrouhlí se na **nejbližší** krok
 a rozdíl, nejvýš polovinu kroku, dorovná baterie. Přebytek tak neteče do sítě.
 
-* Začne při **SoC plné baterie** (99 %), skončí o 5 % níž (94 %). Pak se baterie
-  dobije a začne to znovu – mělké cykly nahoře baterii nevadí.
-* Jen při výrobě a když baterie nemá přednost.
+* Při **přetoku** a SoC nad rezervou, nebo u **plné baterie** (od SoC plné
+  baterie dolů o 5 % – mělké cykly nahoře).
+* Jen při výrobě a když baterie nemá tvrdou přednost.
 * Zapínání a vypínání dál hlídají zpoždění a minimální doby běhu.
 * Vypíná se přepínačem **Dorovnávat z plné baterie**.
 
@@ -244,6 +253,10 @@ nemění.
   rezervy…). Nic sama nezapíše – na kartě **Použít** / **Zamítnout**,
   nebo služby `fve_optimizer.apply_ai_proposal` /
   `fve_optimizer.dismiss_ai_proposal`. Dispečer dál spíná zařízení.
+* **Kalibrace konstant**: deník metrik (přetok, hunting, nestíhá) za poslední dny.
+  Návrh změny delaye / marginu / night_power až při shodě ≥3 z 5 dnů; po
+  **Použít**/**Zamítnout** 5 dní držení proti oscilaci. Na kartě v **Hodnocení**
+  sekce **Kalibrace konstant** + návrhy označené `[kalibrace]` / „držení“.
 * Po hodnocení můžeš na kartě **zeptat se** na shrnutí / návrhy (služba
   `fve_optimizer.ask_review`) – AI dostane data dne + hodnocení + historii Q&A,
   nic nemění.
